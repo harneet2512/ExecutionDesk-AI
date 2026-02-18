@@ -1,0 +1,15 @@
+{
+  "name": "buy_1w",
+  "text": "Buy the most profitable stock of last 1 week for 3 dollars",
+  "success": true,
+  "status_code": 200,
+  "response": {
+    "content": "How much do you want to buy? (e.g., $10 or 0.01 BTC)",
+    "run_id": null,
+    "intent": "TRADE_EXECUTION_INCOMPLETE",
+    "status": "AWAITING_INPUT"
+  },
+  "error": null,
+  "duration_ms": 2085,
+  "assertions": []
+}

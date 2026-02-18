@@ -1,0 +1,15 @@
+{
+  "content": "\u26a0\ufe0f LIVE ORDER CONFIRMATION\n\nI'm about to place a LIVE market SELL for $1.00 of BTC.\n\nEstimated fees: $0.01\nTotal notional: $1.00\n\n\u26a0\ufe0f THIS IS A REAL TRADE using real funds.\n\nType CONFIRM to place this LIVE order or CANCEL to abort.",
+  "run_id": null,
+  "intent": "TRADE_CONFIRMATION_PENDING",
+  "status": "AWAITING_CONFIRMATION",
+  "pending_trade": {
+    "side": "sell",
+    "asset": "BTC",
+    "amount_usd": 1.0,
+    "mode": "LIVE",
+    "asset_class": "CRYPTO",
+    "confirmation_id": "conf_b8c243acb3fb4dc0a2f20bcd74b816f9"
+  },
+  "confirmation_id": "conf_b8c243acb3fb4dc0a2f20bcd74b816f9"
+}

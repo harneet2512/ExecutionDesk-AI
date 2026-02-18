@@ -1,0 +1,125 @@
+{
+  "timestamp": "2026-02-03T22:18:03.410648",
+  "polygon_smoke": {
+    "success": true,
+    "ticker": "AAPL",
+    "candles_count": 5,
+    "date_range": "2026-01-27T05:00:00Z to 2026-02-02T05:00:00Z",
+    "cache_hit": false,
+    "api_call_made": true,
+    "response_time_ms": 3.54,
+    "error": null,
+    "provider_stats": {
+      "calls": 0,
+      "cache_hits": 0,
+      "rate_limit_waits": 0,
+      "errors": 0,
+      "rate_limiter": {
+        "tokens_per_minute": 5,
+        "current_tokens": 5.0,
+        "total_acquired": 0,
+        "total_waits": 0
+      }
+    }
+  },
+  "commands": [
+    {
+      "name": "greeting",
+      "text": "Hi",
+      "success": true,
+      "status_code": 200,
+      "response": {
+        "content": "Hi \u2014 I'm your financial assistant. I can analyze markets (crypto & stocks), review your portfolio, or execute trades. Try asking me something!",
+        "suggestions": [
+          "Find the most profitable crypto in the last 24h",
+          "Analyze my portfolio risk and allocation",
+          "Buy $10 of BTC in PAPER mode",
+          "Buy $50 of AAPL stock"
+        ],
+        "run_id": null,
+        "intent": "GREETING",
+        "status": "COMPLETED"
+      },
+      "error": null,
+      "duration_ms": 2076,
+      "assertions": []
+    },
+    {
+      "name": "capabilities",
+      "text": "What can you do?",
+      "success": true,
+      "status_code": 200,
+      "response": {
+        "content": "I can help with:\n\n**Market Analysis**\n\u2022 Price data, returns, volatility, candles\n\u2022 Top gainers/losers, technical indicators\n\u2022 Comparative analysis (BTC vs ETH, AAPL vs MSFT)\n\n**Portfolio & Risk**\n\u2022 Allocation, exposure, P&L\n\u2022 Drawdown, risk metrics, diversification\n\n**Trading - Crypto (Automated)**\n\u2022 Paper/live order execution via Coinbase\n\u2022 Supported: BTC, ETH, SOL, ADA, DOT, MATIC, AVAX, LINK, UNI, ATOM\n\n**Trading - Stocks (Order Tickets)**\n\u2022 Generate order tickets for manual execution\n\u2022 Supported: AAPL, MSFT, NVDA, TSLA, SPY, and more\n\u2022 EOD data via Polygon.io\n\n**App Features**\n\u2022 View runs, telemetry, evaluations\n\u2022 Interpret steps panel and charts\n\n**Example Prompts:**\n\u2022 \"Analyze BTC volatility over the last 24 hours\"\n\u2022 \"What's the most profitable crypto today?\"\n\u2022 \"Buy $10 of ETH in PAPER mode\"\n\u2022 \"Buy $50 of AAPL stock\" (generates order ticket)\n\u2022 \"Show me my portfolio allocation\"\n\u2022 \"What's my current P&L?\"\n",
+        "run_id": null,
+        "intent": "CAPABILITIES_HELP",
+        "status": "COMPLETED"
+      },
+      "error": null,
+      "duration_ms": 2067,
+      "assertions": []
+    },
+    {
+      "name": "buy_48h",
+      "text": "Buy the most profitable stock of last 48 hrs for 3 dollars",
+      "success": true,
+      "status_code": 200,
+      "response": {
+        "content": "How much do you want to buy? (e.g., $10 or 0.01 BTC)",
+        "run_id": null,
+        "intent": "TRADE_EXECUTION_INCOMPLETE",
+        "status": "AWAITING_INPUT"
+      },
+      "error": null,
+      "duration_ms": 2065,
+      "assertions": []
+    },
+    {
+      "name": "sell_24h",
+      "text": "Sell the least profitable stock of last 24 hrs for 3 dollars",
+      "success": true,
+      "status_code": 200,
+      "response": {
+        "content": "How much do you want to sell? (e.g., $10 or 0.01 BTC)",
+        "run_id": null,
+        "intent": "TRADE_EXECUTION_INCOMPLETE",
+        "status": "AWAITING_INPUT"
+      },
+      "error": null,
+      "duration_ms": 2061,
+      "assertions": []
+    },
+    {
+      "name": "buy_1w",
+      "text": "Buy the most profitable stock of last 1 week for 3 dollars",
+      "success": true,
+      "status_code": 200,
+      "response": {
+        "content": "How much do you want to buy? (e.g., $10 or 0.01 BTC)",
+        "run_id": null,
+        "intent": "TRADE_EXECUTION_INCOMPLETE",
+        "status": "AWAITING_INPUT"
+      },
+      "error": null,
+      "duration_ms": 2085,
+      "assertions": []
+    },
+    {
+      "name": "portfolio",
+      "text": "Analyze my stock portfolio",
+      "success": true,
+      "status_code": 200,
+      "response": {
+        "content": "No portfolio data found. Try 'Analyze my portfolio' to fetch your live Coinbase holdings.",
+        "run_id": null,
+        "intent": "PORTFOLIO",
+        "status": "COMPLETED"
+      },
+      "error": null,
+      "duration_ms": 2082,
+      "assertions": []
+    }
+  ],
+  "failures": [],
+  "success": true
+}

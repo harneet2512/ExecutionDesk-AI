@@ -1,0 +1,181 @@
+{
+  "run": {
+    "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+    "tenant_id": "t_default",
+    "status": "RUNNING",
+    "execution_mode": "LIVE",
+    "created_at": "2026-02-05T05:27:24.063627Z",
+    "started_at": "2026-02-05T05:27:24.091087Z",
+    "completed_at": null,
+    "trade_proposal_json": "{\"orders\": [{\"symbol\": \"BTC-USD\", \"side\": \"BUY\", \"notional_usd\": 2.982, \"order_type\": \"MARKET\"}], \"citations\": [{\"citation_id\": \"cite_c2773f31164c4557b33fec689e81c841\", \"source_type\": \"market_data\", \"quote\": \"BTC-USD return: -6.33% over 24h\", \"url\": \"market_candles://BTC-USD\", \"evidence\": {\"symbol\": \"BTC-USD\", \"return_pct\": -0.06329992901029982, \"candles_count\": 36, \"window\": \"24h\"}}], \"rationale\": \"Selected BTC-USD based on -6.33% return over lookback window. Budget: $2.98 (with fee buffer).\", \"expected_return_24h\": -0.06329992901029982, \"confidence\": 0.6265998580205996, \"chosen_product_id\": \"BTC-USD\"}",
+    "trace_id": "trace_c3e31ef4f337429f9a0c9782f61ca87a",
+    "source_run_id": null,
+    "command_text": "Confirmed LIVE trade: buy $3.0 of BTC",
+    "execution_plan_json": "{\"steps\": [{\"step_id\": \"step_1\", \"step_name\": \"research\", \"description\": \"Fetch market data for universe\", \"sequence\": 1, \"status\": \"pending\"}, {\"step_id\": \"step_2\", \"step_name\": \"signals\", \"description\": \"Rank candidates by 24h return\", \"sequence\": 2, \"status\": \"pending\"}, {\"step_id\": \"step_3\", \"step_name\": \"risk\", \"description\": \"Assess portfolio risk\", \"sequence\": 3, \"status\": \"pending\"}, {\"step_id\": \"step_4\", \"step_name\": \"news\", \"description\": \"Analyze news sentiment\", \"sequence\": 4, \"status\": \"pending\"}, {\"step_id\": \"step_5\", \"step_name\": \"proposal\", \"description\": \"Create order proposal\", \"sequence\": 5, \"status\": \"pending\"}, {\"step_id\": \"step_6\", \"step_name\": \"policy_check\", \"description\": \"Validate policy/risk/budget constraints\", \"sequence\": 6, \"status\": \"pending\"}, {\"step_id\": \"step_7\", \"step_name\": \"approval\", \"description\": \"Await user approval (LIVE mode)\", \"sequence\": 7, \"status\": \"pending\"}, {\"step_id\": \"step_8\", \"step_name\": \"execution\", \"description\": \"Place order via provider\", \"sequence\": 8, \"status\": \"pending\"}, {\"step_id\": \"step_9\", \"step_name\": \"post_trade\", \"description\": \"Fetch fills and update portfolio\", \"sequence\": 9, \"status\": \"pending\"}, {\"step_id\": \"step_10\", \"step_name\": \"eval\", \"description\": \"Run evaluations\", \"sequence\": 10, \"status\": \"pending\"}], \"selected_asset\": \"BTC-USD\", \"selected_order\": {\"symbol\": \"BTC-USD\", \"side\": \"buy\", \"notional_usd\": 3.0}, \"decision_trace\": [{\"step\": \"parse_command\", \"input\": \"Confirmed LIVE trade: buy $3.0 of BTC\", \"output\": {\"side\": \"buy\", \"budget_usd\": 3.0, \"metric\": \"return\", \"window\": \"24h\", \"lookback_hours\": 24, \"universe\": [\"BTC-USD\"], \"constraints\": {}, \"raw_command\": \"Confirmed LIVE trade: buy $3.0 of BTC\"}, \"timestamp\": \"2026-02-05T05:27:24.073523Z\"}, {\"step\": \"create_strategy_spec\", \"strategy\": \"TopReturnStrategy\", \"params\": {\"budget_usd\": 3.0, \"side\": \"buy\"}, \"timestamp\": \"2026-02-05T05:27:24.073523Z\"}]}",
+    "parsed_intent_json": "{\"side\": \"buy\", \"budget_usd\": 3.0, \"metric\": \"return\", \"window\": \"24h\", \"lookback_hours\": 24, \"universe\": [\"BTC-USD\"], \"constraints\": {}, \"raw_command\": \"Confirmed LIVE trade: buy $3.0 of BTC\"}",
+    "intent_json": "{\"intent\": \"TRADE_EXECUTION\", \"confirmed\": true, \"side\": \"buy\", \"asset\": \"BTC\", \"amount_usd\": 3.0, \"mode\": \"LIVE\", \"confirmation_id\": \"conf_70cdd422a1dd4b2ab0e1ead40566c070\", \"is_most_profitable\": false, \"lookback_hours\": 24, \"universe\": [\"BTC-USD\"]}",
+    "provider_name": null,
+    "error_summary": null,
+    "metadata_json": "{\"intent\": \"TRADE_EXECUTION\", \"confirmed\": true, \"side\": \"buy\", \"asset\": \"BTC\", \"amount_usd\": 3.0, \"mode\": \"LIVE\", \"confirmation_id\": \"conf_70cdd422a1dd4b2ab0e1ead40566c070\", \"is_most_profitable\": false, \"lookback_hours\": 24, \"universe\": [\"BTC-USD\"]}",
+    "failure_reason": null,
+    "failure_code": null,
+    "news_enabled": 1,
+    "asset_class": "CRYPTO",
+    "summary_text": "Buy $3.0 of BTC",
+    "last_event_at": "2026-02-05T05:27:25.593535Z",
+    "artifacts_count": 7
+  },
+  "nodes": [
+    {
+      "node_id": "node_000050de119c443cb53ec0470bdf9943",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "name": "research",
+      "node_type": "research",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:27:24.184175Z",
+      "completed_at": "2026-02-05T05:27:25.003675Z",
+      "inputs_json": null,
+      "outputs_json": "{\"candles_by_symbol\": {\"BTC-USD\": 36}, \"last_prices_by_symbol\": {\"BTC-USD\": 70077.97}, \"returns_by_symbol\": {\"BTC-USD\": -0.06329992901029982}, \"citations\": [{\"citation_id\": \"cite_c2773f31164c4557b33fec689e81c841\", \"source_type\": \"market_data\", \"quote\": \"BTC-USD return: -6.33% over 24h\", \"url\": \"market_candles://BTC-USD\", \"evidence\": {\"symbol\": \"BTC-USD\", \"return_pct\": -0.06329992901029982, \"candles_count\": 36, \"window\": \"24h\"}}], \"citation_ids\": [\"cite_c2773f31164c4557b33fec689e81c841\"], \"universe\": [\"BTC-USD\"], \"lookback_hours\": 24, \"drop_reasons\": {}, \"evidence_refs\": {\"universe_snapshot\": true, \"research_summary\": true, \"research_debug\": true, \"financial_brief\": true}, \"safe_summary\": \"Researched 1 assets over 24h. 1 valid, 0 dropped. Top: BTC-USD (-0.0633)\"}",
+      "error_json": null
+    },
+    {
+      "node_id": "node_31ec098e201d41cc8dbbdfbd160d52f1",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "name": "signals",
+      "node_type": "signals",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:27:25.042217Z",
+      "completed_at": "2026-02-05T05:27:25.090994Z",
+      "inputs_json": null,
+      "outputs_json": "{\"rankings\": [{\"symbol\": \"BTC-USD\", \"return_pct\": -0.06329992901029982}], \"top_symbol\": \"BTC-USD\", \"top_return\": -0.06329992901029982, \"last_price\": 70077.97, \"momentum\": \"negative\", \"signal_strength\": 0.6329992901029982, \"universe_size\": 1, \"lookback_hours\": 24}",
+      "error_json": null
+    },
+    {
+      "node_id": "node_516c218eeec142e0b308c701d1f2f09e",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "name": "risk",
+      "node_type": "risk",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:27:25.130719Z",
+      "completed_at": "2026-02-05T05:27:25.174517Z",
+      "inputs_json": null,
+      "outputs_json": "{\"budget_usd\": 3.0, \"max_notional\": 3.0, \"fee_buffer\": 0.018000000000000002, \"fee_rate\": 0.006, \"net_notional\": 2.982, \"final_notional\": 2.982, \"min_order_size_usd\": 1.0, \"budget_compliance\": true, \"risk_summary\": \"Low risk\", \"top_symbol\": \"BTC-USD\"}",
+      "error_json": null
+    },
+    {
+      "node_id": "node_c089592126d6464896ef0ad5d73a55e3",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "name": "news",
+      "node_type": "news",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:27:25.234582Z",
+      "completed_at": "2026-02-05T05:27:25.272860Z",
+      "inputs_json": null,
+      "outputs_json": "{\"brief\": {\"window_hours\": 24, \"assets\": [], \"blockers\": [], \"generated_at\": \"2026-02-05T05:27:25.262676\"}, \"checked_assets\": [\"BTC-USD\"], \"blockers\": [], \"evidence_refs\": [{\"news_brief\": true, \"blocker_count\": 0}], \"safe_summary\": \"Analyzed news for BTC. No blockers.\"}",
+      "error_json": null
+    },
+    {
+      "node_id": "node_1068e57ddb284f158f216eca97e80f44",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "name": "proposal",
+      "node_type": "proposal",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:27:25.334956Z",
+      "completed_at": "2026-02-05T05:27:25.383580Z",
+      "inputs_json": null,
+      "outputs_json": "{\"orders\": [{\"symbol\": \"BTC-USD\", \"side\": \"BUY\", \"notional_usd\": 2.982, \"order_type\": \"MARKET\"}], \"citations\": [{\"citation_id\": \"cite_c2773f31164c4557b33fec689e81c841\", \"source_type\": \"market_data\", \"quote\": \"BTC-USD return: -6.33% over 24h\", \"url\": \"market_candles://BTC-USD\", \"evidence\": {\"symbol\": \"BTC-USD\", \"return_pct\": -0.06329992901029982, \"candles_count\": 36, \"window\": \"24h\"}}], \"rationale\": \"Selected BTC-USD based on -6.33% return over lookback window. Budget: $2.98 (with fee buffer).\", \"expected_return_24h\": -0.06329992901029982, \"confidence\": 0.6265998580205996, \"chosen_product_id\": \"BTC-USD\"}",
+      "error_json": null
+    },
+    {
+      "node_id": "node_43d68c7241864627b161aaf834073eef",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "name": "policy_check",
+      "node_type": "policy_check",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:27:25.418834Z",
+      "completed_at": "2026-02-05T05:27:25.468678Z",
+      "inputs_json": null,
+      "outputs_json": "{\"decision\": \"BLOCKED\", \"reasons\": [\"Symbol BTC-USD not in allowlist: ['BTC', 'ETH', 'SOL']\"], \"evidence_refs\": [{\"policy_event_id\": \"pol_50562e84d7204f65bb03feaf879f0601\"}], \"safe_summary\": \"Policy check: BLOCKED\"}",
+      "error_json": null
+    },
+    {
+      "node_id": "node_ae6ea59d96ae43afb9c452b6d893c31e",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "name": "approval",
+      "node_type": "approval",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:27:25.508653Z",
+      "completed_at": "2026-02-05T05:27:25.539072Z",
+      "inputs_json": null,
+      "outputs_json": "{\"requires_approval\": false}",
+      "error_json": null
+    },
+    {
+      "node_id": "node_71350f1e93964f39a59f42a32643c17c",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "name": "execution",
+      "node_type": "execution",
+      "status": "RUNNING",
+      "started_at": "2026-02-05T05:27:25.578087Z",
+      "completed_at": null,
+      "inputs_json": null,
+      "outputs_json": null,
+      "error_json": null
+    }
+  ],
+  "policy_events": [
+    {
+      "id": "pol_50562e84d7204f65bb03feaf879f0601",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "node_id": "node_43d68c7241864627b161aaf834073eef",
+      "policy_id": null,
+      "decision": "BLOCKED",
+      "reasons_json": "[\"Symbol BTC-USD not in allowlist: ['BTC', 'ETH', 'SOL']\"]",
+      "ts": "2026-02-05T05:27:25.450819Z"
+    }
+  ],
+  "approvals": [],
+  "orders": [
+    {
+      "order_id": "ord_42434842807e485e8b6473eaa48b2c7c",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "tenant_id": "t_default",
+      "provider": "COINBASE",
+      "symbol": "BTC-USD",
+      "side": "BUY",
+      "order_type": "MARKET",
+      "qty": null,
+      "notional_usd": 2.982,
+      "status": "REJECTED",
+      "created_at": "2026-02-05T05:27:26.236803Z",
+      "client_order_id": "client_ff7a23ea36334d529622383a312bbcba",
+      "filled_qty": 0.0,
+      "avg_fill_price": null,
+      "total_fees": 0.0,
+      "status_reason": "INSUFFICIENT_FUND: Insufficient balance in source account",
+      "status_updated_at": "2026-02-05T05:27:26.236803Z"
+    }
+  ],
+  "snapshots": [
+    {
+      "snapshot_id": "snap_65e611fd79b346ebacfbfdf9ef3fb8e5",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "tenant_id": "t_default",
+      "balances_json": "{}",
+      "positions_json": "{}",
+      "total_value_usd": 0.0,
+      "ts": "2026-02-05T05:27:24.119144Z"
+    },
+    {
+      "snapshot_id": "snap_909a9ced3bae48e8ac1a4844523a74a7",
+      "run_id": "run_80df4d01675b4f54988c8e7aced58a3b",
+      "tenant_id": "t_default",
+      "balances_json": "{}",
+      "positions_json": "{}",
+      "total_value_usd": 0.0,
+      "ts": "2026-02-05T05:27:25.083939Z"
+    }
+  ],
+  "evals": [],
+  "fills": []
+}

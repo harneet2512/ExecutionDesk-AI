@@ -1,0 +1,15 @@
+{
+  "name": "portfolio",
+  "text": "Analyze my stock portfolio",
+  "success": true,
+  "status_code": 200,
+  "response": {
+    "content": "No portfolio data found. Try 'Analyze my portfolio' to fetch your live Coinbase holdings.",
+    "run_id": null,
+    "intent": "PORTFOLIO",
+    "status": "COMPLETED"
+  },
+  "error": null,
+  "duration_ms": 2082,
+  "assertions": []
+}

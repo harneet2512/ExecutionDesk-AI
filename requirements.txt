@@ -1,0 +1,59 @@
+# Core dependencies
+fastapi>=0.115.0,<0.120.0  # Compatible with AnyIO 4.x
+uvicorn[standard]>=0.30.0
+pydantic>=2.8.0,<3
+pydantic-settings>=2.6.1,<3  # fastmcp 1.0 requires >=2.6.1
+python-dotenv==1.0.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+sse-starlette>=1.8.0
+
+# Database
+sqlalchemy==2.0.23
+
+# News
+feedparser>=6.0.10
+
+# Observability
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-exporter-otlp-proto-grpc==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
+prometheus_client>=0.20.0
+prometheus-client>=0.21.0
+
+# Agents & MCP
+openai>=1.68.0  # Compatible with AnyIO 4.x
+# Note: removed 'agents' package (pulls tensorflow/gym, not an LLM agents SDK)
+mcp>=0.11.0  # Without [cli] extra to avoid conflicts
+fastmcp>=0.8.0
+anyio>=4.6.0,<5.0.0  # Explicit AnyIO 4.x for MCP compatibility
+
+# Market data
+# polygon-api-client==1.13.0  # Commented out: conflicts with fastmcp websockets requirement (polygon needs <12.0, fastmcp needs >=15.0.1)
+
+# HTTP clients
+httpx==0.28.1  # Compatible with openai<1 and fastmcp>=0.28.1
+requests==2.31.0
+
+# Coinbase integration (for real exchange)
+# Note: Using REST API, no additional SDK required
+
+# Utilities
+numpy>=2.0.2,<3
+pandas>=2.2.2
+plotly==5.18.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+requests==2.31.0  # For frontend smoke tests
+
+# JWT for Coinbase CDP (ES256)
+PyJWT[crypto]==2.8.0
+cryptography==41.0.7
+
+# Crypto/Binance (for future implementation)
+# aiohttp==3.9.1  # For WebSocket
+# websockets==12.0  # For WebSocket

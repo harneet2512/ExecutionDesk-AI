@@ -1,0 +1,315 @@
+{
+  "plan": {
+    "steps": [
+      {
+        "step_id": "step_1",
+        "step_name": "research",
+        "description": "Fetch market data for universe",
+        "sequence": 1,
+        "status": "pending"
+      },
+      {
+        "step_id": "step_2",
+        "step_name": "signals",
+        "description": "Rank candidates by 24h return",
+        "sequence": 2,
+        "status": "pending"
+      },
+      {
+        "step_id": "step_3",
+        "step_name": "risk",
+        "description": "Assess portfolio risk",
+        "sequence": 3,
+        "status": "pending"
+      },
+      {
+        "step_id": "step_4",
+        "step_name": "news",
+        "description": "Analyze news sentiment",
+        "sequence": 4,
+        "status": "pending"
+      },
+      {
+        "step_id": "step_5",
+        "step_name": "proposal",
+        "description": "Create order proposal",
+        "sequence": 5,
+        "status": "pending"
+      },
+      {
+        "step_id": "step_6",
+        "step_name": "policy_check",
+        "description": "Validate policy/risk/budget constraints",
+        "sequence": 6,
+        "status": "pending"
+      },
+      {
+        "step_id": "step_7",
+        "step_name": "approval",
+        "description": "Await user approval (LIVE mode)",
+        "sequence": 7,
+        "status": "pending"
+      },
+      {
+        "step_id": "step_8",
+        "step_name": "execution",
+        "description": "Place order via provider",
+        "sequence": 8,
+        "status": "pending"
+      },
+      {
+        "step_id": "step_9",
+        "step_name": "post_trade",
+        "description": "Fetch fills and update portfolio",
+        "sequence": 9,
+        "status": "pending"
+      },
+      {
+        "step_id": "step_10",
+        "step_name": "eval",
+        "description": "Run evaluations",
+        "sequence": 10,
+        "status": "pending"
+      }
+    ],
+    "selected_asset": "BTC-USD",
+    "selected_order": {
+      "symbol": "BTC-USD",
+      "side": "sell",
+      "notional_usd": 1.0
+    },
+    "decision_trace": [
+      {
+        "step": "parse_command",
+        "input": "Confirmed LIVE trade: sell $1.0 of BTC",
+        "output": {
+          "side": "sell",
+          "budget_usd": 1.0,
+          "metric": "return",
+          "window": "24h",
+          "lookback_hours": 24,
+          "universe": [
+            "BTC-USD"
+          ],
+          "constraints": {},
+          "raw_command": "Confirmed LIVE trade: sell $1.0 of BTC"
+        },
+        "timestamp": "2026-02-05T05:00:43.577350Z"
+      },
+      {
+        "step": "create_strategy_spec",
+        "strategy": "TopReturnStrategy",
+        "params": {
+          "budget_usd": 1.0,
+          "side": "sell"
+        },
+        "timestamp": "2026-02-05T05:00:43.577350Z"
+      }
+    ]
+  },
+  "parsed_intent": {
+    "side": "sell",
+    "budget_usd": 1.0,
+    "metric": "return",
+    "window": "24h",
+    "lookback_hours": 24,
+    "universe": [
+      "BTC-USD"
+    ],
+    "constraints": {},
+    "raw_command": "Confirmed LIVE trade: sell $1.0 of BTC"
+  },
+  "steps": [
+    {
+      "step_id": "node_34d00a9743f940a396f7a30e5c32c6e7",
+      "step_name": "research",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:00:43.682135Z",
+      "completed_at": "2026-02-05T05:00:44.410798Z",
+      "has_output": true,
+      "has_error": false
+    },
+    {
+      "step_id": "node_95aa5afe9b0e4cd38d5f6e5490262827",
+      "step_name": "signals",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:00:44.453825Z",
+      "completed_at": "2026-02-05T05:00:44.506191Z",
+      "has_output": true,
+      "has_error": false
+    },
+    {
+      "step_id": "node_8424e249ae2c4b79997a9d867f56717a",
+      "step_name": "risk",
+      "status": "FAILED",
+      "started_at": "2026-02-05T05:00:44.546552Z",
+      "completed_at": "2026-02-05T05:00:44.590846Z",
+      "has_output": false,
+      "has_error": true
+    }
+  ],
+  "artifacts": {
+    "rankings": [
+      {
+        "symbol": "BTC-USD",
+        "return_pct": -0.054049881525662334
+      }
+    ],
+    "candles_batches": [
+      {
+        "batch_id": "batch_6bf0c9e2a7954498855e7e48278d50c9",
+        "symbol": "BTC-USD",
+        "candles_count": 36
+      }
+    ],
+    "tool_calls": [
+      {
+        "id": "tool_8af21f00d5d343acacaa74fbc9563225",
+        "tool_name": "fetch_candles",
+        "mcp_server": "coinbase_market_data",
+        "status": "SUCCESS"
+      },
+      {
+        "id": "tool_073b14fe5c3d4e8ba75a8fe282ed92fc",
+        "tool_name": "rag_search",
+        "mcp_server": "research-mcp-server",
+        "status": "SUCCESS"
+      }
+    ]
+  },
+  "current_step": {
+    "step_id": "node_8424e249ae2c4b79997a9d867f56717a",
+    "step_name": "risk",
+    "status": "FAILED",
+    "started_at": "2026-02-05T05:00:44.546552Z",
+    "completed_at": "2026-02-05T05:00:44.590846Z",
+    "has_output": false,
+    "has_error": true
+  },
+  "status": "FAILED",
+  "trace_id": "trace_f1fec7040bae4ac4a4de3ee37f1d734b",
+  "recent_events": [
+    {
+      "event_type": "TOOL_RESULT",
+      "payload": {
+        "tool_call_id": "tool_8af21f00d5d343acacaa74fbc9563225",
+        "tool_name": "fetch_candles",
+        "mcp_server": "coinbase_market_data",
+        "node_id": "node_34d00a9743f940a396f7a30e5c32c6e7",
+        "status": "SUCCESS",
+        "latency_ms": 587,
+        "response_summary": "Fetched 36 candles",
+        "attempt": 1
+      },
+      "ts": "2026-02-05T05:00:44.673086Z"
+    },
+    {
+      "event_type": "TOOL_CALL",
+      "payload": {
+        "tool_call_id": "tool_8af21f00d5d343acacaa74fbc9563225",
+        "tool_name": "fetch_candles",
+        "mcp_server": "coinbase_market_data",
+        "node_id": "node_34d00a9743f940a396f7a30e5c32c6e7",
+        "request_summary": "symbol=BTC-USD",
+        "attempt": 1
+      },
+      "ts": "2026-02-05T05:00:44.660152Z"
+    },
+    {
+      "event_type": "TOOL_RESULT",
+      "payload": {
+        "tool_call_id": "tool_073b14fe5c3d4e8ba75a8fe282ed92fc",
+        "tool_name": "rag_search",
+        "mcp_server": "research-mcp-server",
+        "node_id": "node_34d00a9743f940a396f7a30e5c32c6e7",
+        "status": "SUCCESS",
+        "latency_ms": 0,
+        "response_summary": "{'chunks_count': 3, 'chunks': [{'chunk_id': 'policy_chunk_1', 'text': 'Policy guideline 1: Risk limi",
+        "attempt": 1
+      },
+      "ts": "2026-02-05T05:00:44.647916Z"
+    },
+    {
+      "event_type": "TOOL_CALL",
+      "payload": {
+        "tool_call_id": "tool_073b14fe5c3d4e8ba75a8fe282ed92fc",
+        "tool_name": "rag_search",
+        "mcp_server": "research-mcp-server",
+        "node_id": "node_34d00a9743f940a396f7a30e5c32c6e7",
+        "request_summary": "{'query': 'trading policy and risk constraints', 'top_k': 5}",
+        "attempt": 1
+      },
+      "ts": "2026-02-05T05:00:44.635140Z"
+    },
+    {
+      "event_type": "RUN_FAILED",
+      "payload": {
+        "error": "Net notional $0.99 below minimum $1.0 (after fees)"
+      },
+      "ts": "2026-02-05T05:00:44.623859Z"
+    },
+    {
+      "event_type": "RUN_STATUS",
+      "payload": {
+        "status": "FAILED",
+        "error": "Net notional $0.99 below minimum $1.0 (after fees)"
+      },
+      "ts": "2026-02-05T05:00:44.613177Z"
+    },
+    {
+      "event_type": "STEP_FAILED",
+      "payload": {
+        "step_id": "node_8424e249ae2c4b79997a9d867f56717a",
+        "step_name": "risk",
+        "sequence": 3,
+        "status": "failed",
+        "error": "Net notional $0.99 below minimum $1.0 (after fees)",
+        "started_at": "2026-02-05T05:00:44.546552Z"
+      },
+      "ts": "2026-02-05T05:00:44.596452Z"
+    },
+    {
+      "event_type": "NODE_STARTED",
+      "payload": {
+        "node_id": "node_8424e249ae2c4b79997a9d867f56717a",
+        "node_name": "risk"
+      },
+      "ts": "2026-02-05T05:00:44.567672Z"
+    },
+    {
+      "event_type": "STEP_STARTED",
+      "payload": {
+        "step_id": "node_8424e249ae2c4b79997a9d867f56717a",
+        "step_name": "risk",
+        "node_id": "node_8424e249ae2c4b79997a9d867f56717a",
+        "sequence": 3,
+        "description": "Assess portfolio risk",
+        "started_at": "2026-02-05T05:00:44.546552Z"
+      },
+      "ts": "2026-02-05T05:00:44.555104Z"
+    },
+    {
+      "event_type": "NODE_FINISHED",
+      "payload": {
+        "node_id": "node_95aa5afe9b0e4cd38d5f6e5490262827",
+        "node_name": "signals",
+        "result": {
+          "rankings": [
+            {
+              "symbol": "BTC-USD",
+              "return_pct": -0.054049881525662334
+            }
+          ],
+          "top_symbol": "BTC-USD",
+          "top_return": -0.054049881525662334,
+          "last_price": 70770.0,
+          "momentum": "negative",
+          "signal_strength": 0.5404988152566234,
+          "universe_size": 1,
+          "lookback_hours": 24
+        }
+      },
+      "ts": "2026-02-05T05:00:44.531997Z"
+    }
+  ]
+}

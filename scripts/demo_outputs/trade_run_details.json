@@ -1,0 +1,91 @@
+{
+  "run": {
+    "run_id": "run_d7e01e277a68470e917e26ec08a7fd6b",
+    "tenant_id": "t_default",
+    "status": "FAILED",
+    "execution_mode": "LIVE",
+    "created_at": "2026-02-05T05:00:43.569098Z",
+    "started_at": "2026-02-05T05:00:43.591560Z",
+    "completed_at": null,
+    "trade_proposal_json": null,
+    "trace_id": "trace_f1fec7040bae4ac4a4de3ee37f1d734b",
+    "source_run_id": null,
+    "command_text": "Confirmed LIVE trade: sell $1.0 of BTC",
+    "execution_plan_json": "{\"steps\": [{\"step_id\": \"step_1\", \"step_name\": \"research\", \"description\": \"Fetch market data for universe\", \"sequence\": 1, \"status\": \"pending\"}, {\"step_id\": \"step_2\", \"step_name\": \"signals\", \"description\": \"Rank candidates by 24h return\", \"sequence\": 2, \"status\": \"pending\"}, {\"step_id\": \"step_3\", \"step_name\": \"risk\", \"description\": \"Assess portfolio risk\", \"sequence\": 3, \"status\": \"pending\"}, {\"step_id\": \"step_4\", \"step_name\": \"news\", \"description\": \"Analyze news sentiment\", \"sequence\": 4, \"status\": \"pending\"}, {\"step_id\": \"step_5\", \"step_name\": \"proposal\", \"description\": \"Create order proposal\", \"sequence\": 5, \"status\": \"pending\"}, {\"step_id\": \"step_6\", \"step_name\": \"policy_check\", \"description\": \"Validate policy/risk/budget constraints\", \"sequence\": 6, \"status\": \"pending\"}, {\"step_id\": \"step_7\", \"step_name\": \"approval\", \"description\": \"Await user approval (LIVE mode)\", \"sequence\": 7, \"status\": \"pending\"}, {\"step_id\": \"step_8\", \"step_name\": \"execution\", \"description\": \"Place order via provider\", \"sequence\": 8, \"status\": \"pending\"}, {\"step_id\": \"step_9\", \"step_name\": \"post_trade\", \"description\": \"Fetch fills and update portfolio\", \"sequence\": 9, \"status\": \"pending\"}, {\"step_id\": \"step_10\", \"step_name\": \"eval\", \"description\": \"Run evaluations\", \"sequence\": 10, \"status\": \"pending\"}], \"selected_asset\": \"BTC-USD\", \"selected_order\": {\"symbol\": \"BTC-USD\", \"side\": \"sell\", \"notional_usd\": 1.0}, \"decision_trace\": [{\"step\": \"parse_command\", \"input\": \"Confirmed LIVE trade: sell $1.0 of BTC\", \"output\": {\"side\": \"sell\", \"budget_usd\": 1.0, \"metric\": \"return\", \"window\": \"24h\", \"lookback_hours\": 24, \"universe\": [\"BTC-USD\"], \"constraints\": {}, \"raw_command\": \"Confirmed LIVE trade: sell $1.0 of BTC\"}, \"timestamp\": \"2026-02-05T05:00:43.577350Z\"}, {\"step\": \"create_strategy_spec\", \"strategy\": \"TopReturnStrategy\", \"params\": {\"budget_usd\": 1.0, \"side\": \"sell\"}, \"timestamp\": \"2026-02-05T05:00:43.577350Z\"}]}",
+    "parsed_intent_json": "{\"side\": \"sell\", \"budget_usd\": 1.0, \"metric\": \"return\", \"window\": \"24h\", \"lookback_hours\": 24, \"universe\": [\"BTC-USD\"], \"constraints\": {}, \"raw_command\": \"Confirmed LIVE trade: sell $1.0 of BTC\"}",
+    "intent_json": "{\"intent\": \"TRADE_EXECUTION\", \"confirmed\": true, \"side\": \"sell\", \"asset\": \"BTC\", \"amount_usd\": 1.0, \"mode\": \"LIVE\", \"confirmation_id\": \"conf_44f44af41cee4875a6c428c39c1aaba6\", \"is_most_profitable\": false, \"lookback_hours\": 24, \"universe\": [\"BTC-USD\"], \"asset_class\": \"CRYPTO\", \"news_enabled\": true}",
+    "provider_name": null,
+    "error_summary": null,
+    "metadata_json": "{\"intent\": \"TRADE_EXECUTION\", \"confirmed\": true, \"side\": \"sell\", \"asset\": \"BTC\", \"amount_usd\": 1.0, \"mode\": \"LIVE\", \"confirmation_id\": \"conf_44f44af41cee4875a6c428c39c1aaba6\", \"is_most_profitable\": false, \"lookback_hours\": 24, \"universe\": [\"BTC-USD\"], \"asset_class\": \"CRYPTO\", \"news_enabled\": true}",
+    "failure_reason": null,
+    "failure_code": null,
+    "news_enabled": 1,
+    "asset_class": "CRYPTO",
+    "summary_text": "Sell $1.0 of BTC",
+    "last_event_at": "2026-02-05T05:00:44.673086Z",
+    "artifacts_count": 4
+  },
+  "nodes": [
+    {
+      "node_id": "node_34d00a9743f940a396f7a30e5c32c6e7",
+      "run_id": "run_d7e01e277a68470e917e26ec08a7fd6b",
+      "name": "research",
+      "node_type": "research",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:00:43.682135Z",
+      "completed_at": "2026-02-05T05:00:44.410798Z",
+      "inputs_json": null,
+      "outputs_json": "{\"candles_by_symbol\": {\"BTC-USD\": 36}, \"last_prices_by_symbol\": {\"BTC-USD\": 70770.0}, \"returns_by_symbol\": {\"BTC-USD\": -0.054049881525662334}, \"citations\": [{\"citation_id\": \"cite_efcbf6b67476479ba92e37d0c34cb979\", \"source_type\": \"market_data\", \"quote\": \"BTC-USD return: -5.40% over 24h\", \"url\": \"market_candles://BTC-USD\", \"evidence\": {\"symbol\": \"BTC-USD\", \"return_pct\": -0.054049881525662334, \"candles_count\": 36, \"window\": \"24h\"}}], \"citation_ids\": [\"cite_efcbf6b67476479ba92e37d0c34cb979\"], \"universe\": [\"BTC-USD\"], \"lookback_hours\": 24, \"drop_reasons\": {}, \"evidence_refs\": {\"universe_snapshot\": true, \"research_summary\": true, \"research_debug\": true, \"financial_brief\": true}, \"safe_summary\": \"Researched 1 assets over 24h. 1 valid, 0 dropped. Top: BTC-USD (-0.0540)\"}",
+      "error_json": null
+    },
+    {
+      "node_id": "node_95aa5afe9b0e4cd38d5f6e5490262827",
+      "run_id": "run_d7e01e277a68470e917e26ec08a7fd6b",
+      "name": "signals",
+      "node_type": "signals",
+      "status": "COMPLETED",
+      "started_at": "2026-02-05T05:00:44.453825Z",
+      "completed_at": "2026-02-05T05:00:44.506191Z",
+      "inputs_json": null,
+      "outputs_json": "{\"rankings\": [{\"symbol\": \"BTC-USD\", \"return_pct\": -0.054049881525662334}], \"top_symbol\": \"BTC-USD\", \"top_return\": -0.054049881525662334, \"last_price\": 70770.0, \"momentum\": \"negative\", \"signal_strength\": 0.5404988152566234, \"universe_size\": 1, \"lookback_hours\": 24}",
+      "error_json": null
+    },
+    {
+      "node_id": "node_8424e249ae2c4b79997a9d867f56717a",
+      "run_id": "run_d7e01e277a68470e917e26ec08a7fd6b",
+      "name": "risk",
+      "node_type": "risk",
+      "status": "FAILED",
+      "started_at": "2026-02-05T05:00:44.546552Z",
+      "completed_at": "2026-02-05T05:00:44.590846Z",
+      "inputs_json": null,
+      "outputs_json": null,
+      "error_json": "{\"error\": \"Net notional $0.99 below minimum $1.0 (after fees)\"}"
+    }
+  ],
+  "policy_events": [],
+  "approvals": [],
+  "orders": [],
+  "snapshots": [
+    {
+      "snapshot_id": "snap_fc6939989fd14907adf56dfa33b19912",
+      "run_id": "run_d7e01e277a68470e917e26ec08a7fd6b",
+      "tenant_id": "t_default",
+      "balances_json": "{}",
+      "positions_json": "{}",
+      "total_value_usd": 0.0,
+      "ts": "2026-02-05T05:00:43.618248Z"
+    },
+    {
+      "snapshot_id": "snap_90bd9399d53d4a47a3be39b7afc6934a",
+      "run_id": "run_d7e01e277a68470e917e26ec08a7fd6b",
+      "tenant_id": "t_default",
+      "balances_json": "{}",
+      "positions_json": "{}",
+      "total_value_usd": 0.0,
+      "ts": "2026-02-05T05:00:44.498107Z"
+    }
+  ],
+  "evals": [],
+  "fills": []
+}

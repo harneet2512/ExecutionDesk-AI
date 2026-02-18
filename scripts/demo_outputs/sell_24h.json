@@ -1,0 +1,15 @@
+{
+  "name": "sell_24h",
+  "text": "Sell the least profitable stock of last 24 hrs for 3 dollars",
+  "success": true,
+  "status_code": 200,
+  "response": {
+    "content": "How much do you want to sell? (e.g., $10 or 0.01 BTC)",
+    "run_id": null,
+    "intent": "TRADE_EXECUTION_INCOMPLETE",
+    "status": "AWAITING_INPUT"
+  },
+  "error": null,
+  "duration_ms": 2061,
+  "assertions": []
+}

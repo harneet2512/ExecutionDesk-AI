@@ -1,0 +1,22 @@
+{
+  "success": true,
+  "ticker": "AAPL",
+  "candles_count": 5,
+  "date_range": "2026-01-27T05:00:00Z to 2026-02-02T05:00:00Z",
+  "cache_hit": false,
+  "api_call_made": true,
+  "response_time_ms": 3.54,
+  "error": null,
+  "provider_stats": {
+    "calls": 0,
+    "cache_hits": 0,
+    "rate_limit_waits": 0,
+    "errors": 0,
+    "rate_limiter": {
+      "tokens_per_minute": 5,
+      "current_tokens": 5.0,
+      "total_acquired": 0,
+      "total_waits": 0
+    }
+  }
+}
