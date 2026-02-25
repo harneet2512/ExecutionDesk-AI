@@ -63,7 +63,9 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> Dict[str, Any]:
     
     if execution_mode == "LIVE" and not live_creds_available:
         warnings.append("LIVE mode requested but credentials not available. Falling back to PAPER snapshot.")
-        # Try to use PAPER snapshot instead
+        # Analysis-only fallback: paper snapshot is safe here because portfolio_node
+        # never places orders. The execution path (execution_node.py + BrokerMCPServer)
+        # independently blocks LIVE orders when credentials are missing.
         use_live = False
     
     try:

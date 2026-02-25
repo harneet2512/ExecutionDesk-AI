@@ -286,12 +286,23 @@ async def select_asset(
             ]
             universe_desc = "cryptocurrencies (excluding stablecoins)"
         else:
-            # Default: top 25 by listing (Coinbase returns by volume by default)
-            products = [
-                p for p in products 
+            # Filter stablecoins and tokens with empty base_currency_id
+            filtered = [
+                p for p in products
                 if p.get("base_currency_id", "").upper() not in STABLECOINS
-            ][:25]
-            universe_desc = "top 25 cryptocurrencies by volume"
+                and p.get("base_currency_id", "")
+            ]
+            # Sort by 24h volume descending if the field is available; else keep API order.
+            # This surfaces liquid major assets (BTC, ETH, SOL) and pushes obscure
+            # low-liquidity tokens (leveraged tokens, test tokens) to the bottom.
+            filtered.sort(
+                key=lambda p: float(
+                    p.get("volume_24h", 0) or p.get("quote_volume_24h", 0) or 0
+                ),
+                reverse=True,
+            )
+            products = filtered[:25]
+            universe_desc = "top 25 cryptocurrencies by 24h volume"
         
         if not products:
             logger.warning("No products after filtering")
@@ -309,10 +320,15 @@ async def select_asset(
                 return None
                 
             candles = await _fetch_candles_async(product_id, lookback_hours, granularity)
-            
+
             if len(candles) < 2:
                 return None
-            
+
+            # Require minimum average volume to exclude synthetic/illiquid tokens
+            avg_volume = sum(c.get("volume", 0) for c in candles) / len(candles)
+            if avg_volume <= 0:
+                return None  # skip tokens with no trading volume
+
             return_pct = _compute_return(candles)
             
             # Apply threshold filter if specified

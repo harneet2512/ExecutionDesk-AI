@@ -515,11 +515,14 @@ def format_trade_blocked_narrative(
     """Narrative when all trade actions are blocked."""
     failure_summary = "; ".join(failures[:2]) if failures else "No executable positions were found"
     evidence_line = _format_evidence(evidence_items)
-    lead = "No executable sell orders are available right now."
+    lead = "No executable orders are available right now."
     next_step = "Next step: choose a tradable asset with available balance, or CANCEL."
     if failures:
         lower = " ".join(failures).lower()
-        if "not tradable" in lower or "trading is disabled" in lower or "cancel-only" in lower:
+        if "specify quantity" in lower or "please specify" in lower or "missing amount" in lower:
+            lead = "Please provide the amount to proceed with this trade."
+            next_step = "Next step: add an amount (e.g., '$10 of BTC' or '50% of ETH')."
+        elif "not tradable" in lower or "trading is disabled" in lower or "cancel-only" in lower:
             lead = "One or more requested assets are not currently tradable."
             next_step = "Next step: choose an asset with active market trading, or check exchange status."
         elif "limit-only" in lower:

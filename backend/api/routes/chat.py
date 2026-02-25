@@ -19,6 +19,7 @@ from backend.core.ids import new_id
 logger = get_logger(__name__)
 DEBUG_PRECONFIRM_NEWS = os.getenv("DEBUG_PRECONFIRM_NEWS", "0").lower() in ("1", "true", "yes")
 DEBUG_TRADE_DIAGNOSTICS = os.getenv("DEBUG_TRADE_DIAGNOSTICS", "0").lower() in ("1", "true", "yes")
+DEBUG_INTENT = os.getenv("DEBUG_INTENT", "0").lower() in ("1", "true", "yes")
 
 
 def _safe_json_loads(s, default=None):
@@ -976,6 +977,16 @@ async def _chat_command_impl(
             news_enabled,
         )
         parsed_commands = parse_trade_commands(text)
+        if DEBUG_INTENT:
+            for _pc in parsed_commands:
+                logger.info(
+                    "DEBUG_INTENT parse: side=%s asset_class=%s is_most_profitable=%s "
+                    "selection_criteria=%s lookback_h=%s universe_constraint=%s "
+                    "portfolio_ref=%s asset=%s venue=%s",
+                    _pc.side, _pc.asset_class, _pc.is_most_profitable,
+                    _pc.selection_criteria, _pc.lookback_hours, _pc.universe_constraint,
+                    _pc.is_portfolio_reference, _pc.asset, _pc.venue_symbol,
+                )
         if not parsed_commands:
             from backend.agents.narrative import format_no_parse_narrative, build_narrative_structured
             no_parse_content = format_no_parse_narrative()
@@ -1206,6 +1217,13 @@ async def _chat_command_impl(
                         parsed.venue_symbol = f"{selection.selected_symbol}-USD"
                         parsed.resolution_source = "selection_engine"
                         selected_result_dict = selection_result_to_dict(selection)
+                    if DEBUG_INTENT:
+                        logger.info(
+                            "DEBUG_INTENT resolved: asset=%s product_id=%s resolution_source=%s "
+                            "universe_size=%s",
+                            parsed.asset, parsed.venue_symbol, parsed.resolution_source,
+                            (selected_result_dict or {}).get("universe_size"),
+                        )
                 except Exception as selection_err:
                     logger.warning("Asset selection failed: %s", str(selection_err)[:200])
                     blocked_messages.append(PREFLIGHT_MESSAGES["MARKET_UNAVAILABLE"])
@@ -1462,7 +1480,38 @@ async def _chat_command_impl(
             _trade_reasoning = TradeReasoning(confidence="low", plan_summary="")
 
         if not valid_actions:
-            from backend.agents.narrative import format_trade_blocked_narrative, build_narrative_structured
+            from backend.agents.narrative import (
+                format_trade_blocked_narrative,
+                format_missing_amount_narrative,
+                build_narrative_structured,
+            )
+            # Special case: BUY with is_most_profitable + missing amount should ask
+            # for the amount rather than showing a generic blocked/sell message.
+            _all_missing_amount_buy = (
+                bool(blocked_messages)
+                and all((pc.side or "").lower() == "buy" for pc in parsed_commands)
+                and all(
+                    "specify" in m.lower() or "amount" in m.lower() or "quantity" in m.lower()
+                    for m in blocked_messages
+                )
+            )
+            if _all_missing_amount_buy:
+                first_pc = parsed_commands[0]
+                _asset_hint = first_pc.asset or None
+                content = format_missing_amount_narrative(side="buy", asset=_asset_hint)
+                return JSONResponse(content={
+                    "content": content,
+                    "run_id": None,
+                    "intent": "TRADE_EXECUTION",
+                    "status": "NEEDS_AMOUNT",
+                    "request_id": request_id,
+                    "narrative_structured": build_narrative_structured(content),
+                    "suggestions": [
+                        f"Buy $10 of {_asset_hint}" if _asset_hint else "Buy $10 of BTC",
+                        f"Buy $25 of {_asset_hint}" if _asset_hint else "Buy $25 of ETH",
+                        f"Buy $50 of {_asset_hint}" if _asset_hint else "Buy $50 of SOL",
+                    ],
+                })
             content = format_trade_blocked_narrative(
                 candidate_count=len(parsed_commands),
                 failures=all_failures,
