@@ -6,6 +6,8 @@ export interface Run {
   created_at: string;
 }
 
+export type { Artifact } from './artifacts';
+
 export interface RunDetail {
   run: Run;
   nodes: any[];
@@ -17,8 +19,9 @@ export interface RunDetail {
   fills?: any[];
 }
 
-/** Fetch with exponential backoff + jitter for transient errors (429, 502, 503, 504).
- *  Never retries 4xx (except 429) or 500 errors - those are hard failures. */
+/** Fetch with exponential backoff + jitter for transient errors.
+ *  Retries 429/502/503/504 globally, plus 500 for chat-command endpoint
+ *  because dev proxy/backend reloads can produce short-lived ECONNRESET->500. */
 async function fetchWithRetry(
   endpoint: string,
   options: RequestInit,
@@ -28,9 +31,13 @@ async function fetchWithRetry(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const res = await fetch(endpoint, options);
-      // Only retry transient errors: 429 (rate limited) and 503 (service unavailable)
-      // Never retry 4xx or 500 - those are deterministic failures
-      if ((res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504) && attempt < maxRetries) {
+      const retryableStatus =
+        res.status === 429 ||
+        res.status === 502 ||
+        res.status === 503 ||
+        res.status === 504 ||
+        (res.status === 500 && endpoint.includes('/api/v1/chat/command'));
+      if (retryableStatus && attempt < maxRetries) {
         const retryAfter = Number(res.headers.get('Retry-After')) || 0;
         const backoffMs = retryAfter > 0
           ? retryAfter * 1000
@@ -324,20 +331,21 @@ export async function getOpsMetrics(): Promise<any> {
 }
 
 export async function listApprovals(): Promise<any[]> {
-  return apiFetch('/api/v1/approvals');
+  // Approvals are embedded in the run detail response; this stub avoids 404 spam.
+  return [];
 }
 
 export async function approve(approvalId: string, comment: string = ""): Promise<any> {
-  return apiFetch('/api/v1/approvals/' + approvalId + '/approve', {
+  return apiFetch('/api/v1/approvals/' + approvalId + '/decision', {
     method: 'POST',
-    body: JSON.stringify({ comment }),
+    body: JSON.stringify({ decision: 'APPROVED', comment }),
   });
 }
 
 export async function deny(approvalId: string, comment: string = ""): Promise<any> {
-  return apiFetch('/api/v1/approvals/' + approvalId + '/deny', {
+  return apiFetch('/api/v1/approvals/' + approvalId + '/decision', {
     method: 'POST',
-    body: JSON.stringify({ comment }),
+    body: JSON.stringify({ decision: 'REJECTED', comment }),
   });
 }
 

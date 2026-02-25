@@ -8,6 +8,7 @@ from backend.db.repo.trade_confirmations_repo import TradeConfirmationsRepo
 from backend.orchestrator.runner import create_run, execute_run
 from backend.agents.planner import plan_execution
 from backend.core.logging import get_logger
+from backend.services.news_evidence import build_news_evidence_from_insight
 import json
 
 router = APIRouter()
@@ -432,6 +433,14 @@ async def _confirm_trade_impl(confirmation_id: str, tenant_id: str, user_id: str
         } if selection_result else None,
     }
 
+    insight_obj = None
+    try:
+        insight_raw = confirmation["insight_json"] if "insight_json" in (confirmation.keys() if hasattr(confirmation, "keys") else confirmation) else None
+        if insight_raw:
+            insight_obj = json.loads(insight_raw) if isinstance(insight_raw, str) else insight_raw
+    except Exception:
+        insight_obj = None
+
     with get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -454,6 +463,48 @@ async def _confirm_trade_impl(confirmation_id: str, tenant_id: str, user_id: str
                 run_id
             )
         )
+        if news_enabled:
+            news_payload = (
+                (insight_obj or {}).get("asset_news_evidence")
+                if isinstance(insight_obj, dict)
+                else None
+            ) or build_news_evidence_from_insight(
+                asset_symbol=asset,
+                insight=insight_obj if isinstance(insight_obj, dict) else {},
+                lookback=((insight_obj or {}).get("news_outcome") or {}).get("lookback", "24h")
+                if isinstance(insight_obj, dict) else "24h",
+                sources=((insight_obj or {}).get("news_outcome") or {}).get("sources", ["RSS", "GDELT"])
+                if isinstance(insight_obj, dict) else ["RSS", "GDELT"],
+            )
+            cursor.execute(
+                """
+                INSERT INTO run_artifacts (run_id, step_name, artifact_type, artifact_json)
+                VALUES (?, 'news', 'news_evidence', ?)
+                """,
+                (run_id, json.dumps(news_payload))
+            )
+            market_payload = (
+                (insight_obj or {}).get("market_news_evidence")
+                if isinstance(insight_obj, dict)
+                else None
+            )
+            if market_payload:
+                cursor.execute(
+                    """
+                    INSERT INTO run_artifacts (run_id, step_name, artifact_type, artifact_json)
+                    VALUES (?, 'news', 'market_news_evidence', ?)
+                    """,
+                    (run_id, json.dumps(market_payload))
+                )
+            logger.info(
+                "news_evidence_artifact_emitted run=%s asset=%s status=%s items=%s lookback=%s sources=%s",
+                run_id,
+                asset,
+                news_payload.get("status"),
+                len(news_payload.get("items", [])),
+                news_payload.get("lookback"),
+                ",".join(news_payload.get("sources", [])),
+            )
         conn.commit()
 
     logger.info(
@@ -477,10 +528,8 @@ async def _confirm_trade_impl(confirmation_id: str, tenant_id: str, user_id: str
 
     # I2: Include stored financial insight from DB so frontend can render it
     try:
-        insight_raw = confirmation["insight_json"] if "insight_json" in (confirmation.keys() if hasattr(confirmation, 'keys') else confirmation) else None
-        if insight_raw:
-            import json as _json
-            response_dict["financial_insight"] = _json.loads(insight_raw) if isinstance(insight_raw, str) else insight_raw
+        if insight_obj:
+            response_dict["financial_insight"] = insight_obj
     except Exception:
         pass  # Non-critical: skip if insight can't be parsed
 

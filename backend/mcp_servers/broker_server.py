@@ -12,10 +12,10 @@ logger = get_logger(__name__)
 
 class BrokerMCPServer:
     """MCP server for broker operations."""
-    
+
     def __init__(self, execution_mode: str = "PAPER"):
         self.execution_mode = execution_mode
-        
+
         if execution_mode == "LIVE":
             settings = get_settings()
             try:
@@ -25,6 +25,8 @@ class BrokerMCPServer:
                 raise
         else:
             self.provider = PaperProvider()
+
+        self.capabilities = self.provider.capabilities
     
     def place_order(
         self,

@@ -876,9 +876,21 @@ def _generate_recommendations(
 
 
 async def _store_analysis_snapshot(run_id: str, tenant_id: str, brief: PortfolioBrief) -> None:
-    """Store portfolio analysis for REPLAY determinism."""
+    """Store portfolio analysis for REPLAY determinism.
+
+    Also upserts portfolio_snapshots so that trade-staging (sell/buy commands)
+    can find current positions immediately after a portfolio analysis run —
+    without requiring a completed trade first.
+    """
+    ts = now_iso()
+    # Derive positions/balances from the PortfolioBrief
+    positions: dict = {h.asset_symbol: h.qty for h in brief.holdings if h.qty > 0}
+    balances: dict = {h.asset_symbol: h.qty for h in brief.holdings if h.qty > 0}
+    balances["USD"] = brief.cash_usd
+
     with get_conn() as conn:
         cursor = conn.cursor()
+        # 1. Store full analysis snapshot for replay
         snapshot_id = new_id("analysis_")
         cursor.execute(
             """
@@ -889,7 +901,24 @@ async def _store_analysis_snapshot(run_id: str, tenant_id: str, brief: Portfolio
             """,
             (
                 snapshot_id, run_id, tenant_id, brief.mode.value,
-                brief.total_value_usd, json.dumps(brief.dict()), now_iso()
+                brief.total_value_usd, json.dumps(brief.dict()), ts
+            )
+        )
+        # 2. Keep portfolio_snapshots fresh so sell/buy staging can find positions.
+        #    Use INSERT OR REPLACE keyed on a stable deterministic snapshot_id so
+        #    repeated analyses update the row rather than accumulating stale rows.
+        stable_snap_id = f"snap_analysis_{tenant_id}"
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO portfolio_snapshots (
+                snapshot_id, run_id, tenant_id, balances_json,
+                positions_json, total_value_usd, ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                stable_snap_id, run_id, tenant_id,
+                json.dumps(balances), json.dumps(positions),
+                brief.total_value_usd, ts
             )
         )
         conn.commit()

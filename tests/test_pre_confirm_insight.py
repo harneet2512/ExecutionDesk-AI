@@ -156,7 +156,21 @@ class TestGenerateInsight:
         with patch("backend.services.pre_confirm_insight._fetch_price_data") as mock_price, \
              patch("backend.services.pre_confirm_insight._fetch_headlines") as mock_news:
             mock_price.return_value = {"price": 50000.0, "change_24h_pct": -1.5, "price_source": "test"}
-            mock_news.return_value = ([{"title": "BTC dips", "published_at": "t", "source": "Reuters"}], False, "")
+            mock_news.return_value = (
+                [{"title": "BTC dips", "published_at": "t", "source": "Reuters"}],
+                [],
+                False,
+                {
+                    "asset_queries": ["BTC", "BTC-USD", "Bitcoin"],
+                    "asset_status": "ok",
+                    "asset_reason": "",
+                    "fallback_queries": [],
+                    "fallback_status": "",
+                    "fallback_reason": "",
+                    "fallback_rationale": "",
+                    "asset_category": "MAJOR",
+                },
+            )
 
             result = run_async(generate_insight("BTC", "BUY", 10.0, request_id="req_test"))
 
@@ -192,6 +206,92 @@ class TestGenerateInsight:
         mock_news.assert_not_called()
         # When news is disabled, news_empty flag is not set (it's intentional, not a data gap)
         assert "news_empty" not in result["risk_flags"]
+
+    def test_empty_asset_news_triggers_market_fallback_and_rationale(self):
+        from backend.services.pre_confirm_insight import generate_insight
+
+        with patch("backend.services.pre_confirm_insight._fetch_price_data") as mock_price, \
+             patch("backend.services.pre_confirm_insight._fetch_headlines") as mock_news:
+            mock_price.return_value = {"price": 50000.0, "change_24h_pct": -1.0, "price_source": "test"}
+            mock_news.return_value = (
+                [],
+                [{"title": "Crypto market sentiment turns risk-on", "published_at": "t", "source": "Reuters"}],
+                False,
+                {
+                    "asset_queries": ["BTC", "BTC-USD", "Bitcoin"],
+                    "asset_status": "empty",
+                    "asset_reason": "No relevant news found for BTC in the last 24h.",
+                    "fallback_queries": ["crypto market", "bitcoin ETF"],
+                    "fallback_status": "ok",
+                    "fallback_reason": "",
+                    "fallback_rationale": "No asset-specific headlines returned, so showing broader market headlines most likely to impact BTC.",
+                    "asset_category": "MAJOR",
+                },
+            )
+            result = run_async(generate_insight("BTC", "BUY", 10.0, request_id="req_market_fb"))
+
+        assert result.get("market_news_evidence") is not None
+        assert result["market_news_evidence"]["rationale"]
+        assert result["market_news_evidence"]["queries"]
+
+    def test_evidence_payload_includes_required_fields(self):
+        from backend.services.pre_confirm_insight import generate_insight
+
+        with patch("backend.services.pre_confirm_insight._fetch_price_data") as mock_price, \
+             patch("backend.services.pre_confirm_insight._fetch_headlines") as mock_news:
+            mock_price.return_value = {"price": 50000.0, "change_24h_pct": 1.0, "price_source": "test"}
+            mock_news.return_value = (
+                [{"title": "Bitcoin ETF inflows rise", "published_at": "t", "source": "Reuters"}],
+                [],
+                False,
+                {
+                    "asset_queries": ["BTC", "BTC-USD", "Bitcoin"],
+                    "asset_status": "ok",
+                    "asset_reason": "",
+                    "fallback_queries": [],
+                    "fallback_status": "",
+                    "fallback_reason": "",
+                    "fallback_rationale": "",
+                    "asset_category": "MAJOR",
+                },
+            )
+            result = run_async(generate_insight("BTC", "BUY", 10.0, request_id="req_evidence"))
+
+        asset_evidence = result.get("asset_news_evidence") or {}
+        for key in ["queries", "lookback", "sources", "items", "status"]:
+            assert key in asset_evidence
+        assert result.get("impact_summary")
+
+    def test_pre_confirm_news_shape_contract(self):
+        from backend.services.pre_confirm_insight import generate_insight
+
+        with patch("backend.services.pre_confirm_insight._fetch_price_data") as mock_price, \
+             patch("backend.services.pre_confirm_insight._fetch_headlines") as mock_news:
+            mock_price.return_value = {"price": 50000.0, "change_24h_pct": 0.2, "price_source": "test"}
+            mock_news.return_value = (
+                [],
+                [{"title": "Crypto market sentiment improves", "published_at": "t", "source": "Reuters"}],
+                False,
+                {
+                    "asset_queries": ["BTC", "BTC-USD", "Bitcoin"],
+                    "asset_status": "empty",
+                    "asset_reason": "No relevant news found for BTC in the last 24h.",
+                    "fallback_queries": ["crypto market"],
+                    "fallback_status": "ok",
+                    "fallback_reason": "",
+                    "fallback_rationale": "No asset-specific headlines returned, so I'm showing broader market headlines most likely to impact BTC.",
+                    "asset_category": "MAJOR",
+                },
+            )
+            result = run_async(generate_insight("BTC", "BUY", 10.0, news_enabled=True, request_id="req_contract"))
+
+        assert "news_outcome" in result
+        assert "asset_news_evidence" in result
+        assert "impact_summary" in result
+        ae = result["asset_news_evidence"]
+        for key in ["status", "queries", "lookback", "sources", "items"]:
+            assert key in ae
+        assert result.get("market_news_evidence") is not None
 
 
 class TestInsightDataQuality:

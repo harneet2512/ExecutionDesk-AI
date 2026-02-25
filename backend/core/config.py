@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     
     # OpenAI (optional, for LLM features)
     openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # Cheapest cost-effective model
+
+    # E2E diagnostics: prints run_id/request_id to logs for Playwright correlation
+    debug_trade_diagnostics: bool = os.getenv("DEBUG_TRADE_DIAGNOSTICS", "0").lower() in ("1", "true", "yes")
 
 
 _settings: Optional[Settings] = None

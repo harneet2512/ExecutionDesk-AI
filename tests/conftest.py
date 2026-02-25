@@ -68,8 +68,9 @@ def test_db():
     
     # Initialize the database
     try:
-        from backend.db.connect import init_db, get_conn, _close_connections
+        from backend.db.connect import init_db, get_conn, _close_connections, reset_canonical_db_path
         _close_connections()  # Close any existing connections
+        reset_canonical_db_path()  # Allow new DB path for this test
         init_db()
         
         yield db_path
@@ -77,6 +78,11 @@ def test_db():
     finally:
         # Cleanup
         _close_connections()
+        try:
+            from backend.db.connect import reset_canonical_db_path as _reset_dbp
+            _reset_dbp()
+        except ImportError:
+            pass
         
         # Reset settings again to restore original
         try:

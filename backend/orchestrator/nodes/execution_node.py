@@ -1,5 +1,6 @@
 """Execution node."""
 import json
+from decimal import Decimal, ROUND_DOWN
 from backend.db.connect import get_conn
 from backend.core.ids import new_id
 from backend.core.time import now_iso
@@ -10,9 +11,10 @@ from backend.services.notifications.pushover import notify_trade_placed, notify_
 
 logger = get_logger(__name__)
 
-# Coinbase minimum order sizes (approximate, in USD)
-# These are conservative minimums; actual minimums vary per product
-MIN_NOTIONAL_USD = 1.0  # Coinbase generally allows orders >= $1
+# DEPRECATED — see docs/trading_truth_contracts.md INV-3.
+# This hardcoded constant is retained for backward compatibility only.
+# Authoritative minimums come from broker preview or verified product catalog.
+MIN_NOTIONAL_USD = 1.0
 
 
 async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
@@ -308,7 +310,43 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
             "safe_summary": f"Generated {len(ticket_ids)} order ticket(s) for manual execution"
         }
 
+    # ── PRE-TRADE SNAPSHOT (idempotent) ──
+    # Capture Coinbase-accurate balances before placing orders so charts get >=2 data points.
+    try:
+        from backend.services.executable_state import fetch_executable_state
+        from backend.services.market_data import get_price as _get_price_safe_exec
+
+        exec_state = fetch_executable_state(tenant_id)
+        _snap_balances = {}
+        _snap_positions = {}
+        _snap_total = 0.0
+        for ccy, eb in exec_state.balances.items():
+            _snap_balances[ccy] = eb.available_qty
+            if ccy.upper() not in ("USD", "USDC", "USDT") and eb.available_qty > 0:
+                _snap_positions[ccy] = eb.available_qty
+            try:
+                _p = _get_price_safe_exec(f"{ccy}-USD") if ccy.upper() not in ("USD", "USDC", "USDT") else 1.0
+                _snap_total += eb.available_qty * float(_p)
+            except Exception:
+                _snap_total += eb.available_qty if ccy.upper() in ("USD", "USDC", "USDT") else 0.0
+
+        _pre_snap_id = f"snap_pre_{run_id}"
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT OR IGNORE INTO portfolio_snapshots (
+                    snapshot_id, run_id, tenant_id, balances_json, positions_json, total_value_usd, ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (_pre_snap_id, run_id, tenant_id, json.dumps(_snap_balances),
+                 json.dumps(_snap_positions), _snap_total, now_iso()),
+            )
+            conn.commit()
+        logger.info("PRE_TRADE_SNAPSHOT: run=%s snap=%s total=$%.2f", run_id, _pre_snap_id, _snap_total)
+    except Exception as snap_err:
+        logger.warning("Pre-trade snapshot failed (non-critical): %s", str(snap_err)[:200])
+
     # Get provider
+    order_statuses = {}
     if execution_mode == "REPLAY":
         if not source_run_id:
             raise ValueError(f"REPLAY mode requires source_run_id for run {run_id}")
@@ -327,6 +365,90 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
         from backend.mcp_servers.broker_server import BrokerMCPServer
         broker_server = BrokerMCPServer(execution_mode=execution_mode)
 
+        # ── EXECUTION-TIME PREFLIGHT CONSTRAINTS GATE ──
+        # For LIVE SELL orders, refetch actual Coinbase balance and validate minimums
+        # before sending each order to the exchange.
+        if execution_mode == "LIVE":
+            try:
+                _preflight_state = fetch_executable_state(tenant_id)
+            except Exception:
+                _preflight_state = None
+
+            for order in proposal.get("orders", []):
+                if order.get("side", "").upper() != "SELL" or not _preflight_state:
+                    continue
+                base_ccy = order["symbol"].split("-")[0] if "-" in order["symbol"] else order["symbol"]
+                bal = _preflight_state.balances.get(base_ccy)
+                if not bal:
+                    continue
+
+                available_d = Decimal(str(bal.available_qty))
+                hold_d = Decimal(str(bal.hold_qty))
+
+                # Fetch product rules for sizing constraints
+                try:
+                    from backend.providers.coinbase_provider import CoinbaseProvider
+                    _cb_prov = CoinbaseProvider()
+                    _prod_details = _cb_prov._validate_product_constraints(order["symbol"], order.get("notional_usd", 0))
+                except Exception:
+                    _prod_details = {}
+
+                increment_d = Decimal(_prod_details.get("base_increment", "0.00000001"))
+                base_min_d = Decimal(_prod_details.get("base_min_size", "0"))
+                min_market_d = Decimal(_prod_details.get("min_market_funds", "0"))
+                epsilon_d = Decimal("1E-10")
+
+                safe_qty = ((available_d - epsilon_d) / increment_d).to_integral_value(rounding=ROUND_DOWN) * increment_d
+                if safe_qty <= 0:
+                    safe_qty = Decimal("0")
+
+                # Check minimums
+                try:
+                    _cp = _get_price_safe_exec(order["symbol"])
+                    notional_d = safe_qty * Decimal(str(_cp))
+                except Exception:
+                    _cp = 0
+                    notional_d = Decimal("0")
+
+                if safe_qty < base_min_d or (min_market_d > 0 and notional_d < min_market_d):
+                    logger.warning(
+                        "PREFLIGHT_DUST: run=%s symbol=%s available=%s safe_qty=%s base_min=%s",
+                        run_id, order["symbol"], available_d, safe_qty, base_min_d,
+                    )
+                    from backend.orchestrator.runner import _persist_artifact
+                    _persist_artifact(run_id, "execution", "balance_mismatch_diagnostic", {
+                        "snapshot_balance": float(order.get("qty") or order.get("notional_usd", 0)),
+                        "coinbase_available": float(available_d),
+                        "coinbase_hold": float(hold_d),
+                        "account_uuid": bal.account_uuid,
+                        "likely_causes": [
+                            "funds on hold from open orders",
+                            "portfolio/account mismatch",
+                            "recent deposit not yet settled",
+                        ],
+                        "constraint_violated": "DUST_BELOW_MINIMUM",
+                        "base_min_size": str(base_min_d),
+                        "min_market_funds": str(min_market_d),
+                        "computed_qty": str(safe_qty),
+                        "diagnosed_at": now_iso(),
+                    })
+                    from backend.core.error_codes import TradeErrorException, TradeErrorCode
+                    raise TradeErrorException(
+                        error_code=TradeErrorCode.BELOW_MINIMUM_SIZE,
+                        message=(
+                            f"Cannot sell {order['symbol']}: position below minimum order size (dust). "
+                            f"Minimum base_size={base_min_d}, available={available_d}, computed_qty={safe_qty}."
+                        ),
+                        remediation="Position is too small to sell. Consider accumulating more or skipping this asset.",
+                    )
+
+                # Override order qty with verified Coinbase balance
+                order["qty"] = float(safe_qty)
+                logger.info(
+                    "PREFLIGHT_SELL_QTY: run=%s symbol=%s qty=%s (available=%s, hold=%s)",
+                    run_id, order["symbol"], safe_qty, available_d, hold_d,
+                )
+
         order_ids = []
         for order in proposal.get("orders", []):
             client_order_id = new_id("client_")
@@ -341,15 +463,57 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
                     qty=order.get("qty"),
                     client_order_id=client_order_id
                 )
-                order_ids.append(result["order_id"])
+                placed_order_id = result["order_id"]
+                order_ids.append(placed_order_id)
+
+                # Read back the canonical order status from DB after provider placement/polling.
+                with get_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT status, filled_qty, avg_fill_price FROM orders WHERE order_id = ?",
+                        (placed_order_id,),
+                    )
+                    order_row = cursor.fetchone()
+                order_status = (
+                    str(order_row["status"]).upper()
+                    if order_row and order_row["status"]
+                    else "SUBMITTED"
+                )
+                filled_qty = float(order_row["filled_qty"] or 0.0) if order_row else 0.0
+                avg_fill_price = float(order_row["avg_fill_price"] or 0.0) if order_row else 0.0
+                order_statuses[placed_order_id] = order_status
 
                 await emit_event(run_id, "ORDER_SUBMITTED", {
-                    "order_id": result["order_id"],
+                    "order_id": placed_order_id,
                     "symbol": order["symbol"],
                     "side": order["side"],
                     "notional_usd": order["notional_usd"],
-                    "provider": execution_mode
+                    "provider": execution_mode,
+                    "order_status": order_status,
+                    "message": "Order submitted. You can confirm fill in your Coinbase app.",
                 }, tenant_id=tenant_id)
+
+                if order_status == "FILLED":
+                    await emit_event(run_id, "ORDER_FILLED", {
+                        "order_id": placed_order_id,
+                        "symbol": order["symbol"],
+                        "side": order["side"],
+                        "notional_usd": order["notional_usd"],
+                        "filled_qty": filled_qty,
+                        "avg_fill_price": avg_fill_price,
+                        "provider": execution_mode,
+                        "message": "Order filled. You can also confirm in your Coinbase app.",
+                    }, tenant_id=tenant_id)
+                elif order_status in {"SUBMITTED", "OPEN", "PENDING", "PENDING_FILL"}:
+                    await emit_event(run_id, "ORDER_PENDING_FILL", {
+                        "order_id": placed_order_id,
+                        "symbol": order["symbol"],
+                        "side": order["side"],
+                        "notional_usd": order["notional_usd"],
+                        "provider": execution_mode,
+                        "order_status": order_status,
+                        "message": "Order submitted. You can confirm fill in your Coinbase app.",
+                    }, tenant_id=tenant_id)
                 
                 # Send push notification for successful order
                 try:
@@ -358,7 +522,7 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
                         side=order["side"],
                         symbol=order["symbol"],
                         notional_usd=order["notional_usd"],
-                        order_id=result["order_id"],
+                        order_id=placed_order_id,
                         run_id=run_id
                     )
                 except Exception as notif_err:
@@ -484,7 +648,13 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
                 "fills": fill_rows,
                 "total_orders": len(order_rows),
                 "total_fills": len(fill_rows),
-                "created_at": now_iso()
+                "venue": {
+                    "name": "Coinbase" if execution_mode == "LIVE" else "Paper (simulated)",
+                    "execution_mode": execution_mode,
+                    "order_type": "market",
+                },
+                "submitted_at": now_iso(),
+                "created_at": now_iso(),
             }
             cursor.execute(
                 """INSERT INTO run_artifacts (run_id, step_name, artifact_type, artifact_json, created_at)
@@ -495,8 +665,28 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
     except Exception:
         pass  # Non-critical observability
 
+    if execution_mode in {"REPLAY", "PAPER"}:
+        order_statuses = {}
+        for oid in order_ids:
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT status FROM orders WHERE order_id = ?", (oid,))
+                row = cursor.fetchone()
+            order_statuses[oid] = str(row["status"]).upper() if row and row["status"] else "SUBMITTED"
+
+    all_filled = bool(order_ids) and all(
+        str(order_statuses.get(oid, "SUBMITTED")).upper() == "FILLED" for oid in order_ids
+    )
+    safe_summary = (
+        f"Placed {len(order_ids)} order(s) via {execution_mode}; fills confirmed."
+        if all_filled
+        else f"Placed {len(order_ids)} order(s) via {execution_mode}; pending fill confirmation."
+    )
+
     return {
         "order_ids": order_ids,
+        "order_statuses": order_statuses,
+        "fill_confirmed": all_filled,
         "evidence_refs": [{"order_ids": order_ids}],
-        "safe_summary": f"Placed {len(order_ids)} order(s) via {execution_mode} provider"
+        "safe_summary": safe_summary,
     }

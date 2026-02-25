@@ -18,10 +18,11 @@ Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Obje
 Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
 
 # Start backend
+# Run from project root with python -m so CWD is added to sys.path[0],
+# allowing 'import backend.*' to resolve correctly on Windows (spawn-mode multiprocessing).
 $backendJob = Start-Job -ScriptBlock {
     Set-Location $using:PWD
-    Set-Location backend
-    uvicorn api.main:app --reload --port 8000
+    .\.venv\Scripts\python.exe -m uvicorn backend.api.main:app --reload --port 8000
 }
 
 # Start frontend if package.json exists

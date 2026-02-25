@@ -126,7 +126,7 @@ Respond in JSON only:
 
         response = await asyncio.wait_for(
             client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=get_settings().openai_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=500,
@@ -286,7 +286,7 @@ Respond in JSON only:
 
         response = await asyncio.wait_for(
             client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=get_settings().openai_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=400,

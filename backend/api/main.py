@@ -118,6 +118,12 @@ _fastapi_instrumentation_enabled = False
 init_db()
 logger.info("Database initialized")
 
+# INV-5: Lock the canonical DB path immediately after init_db so every
+# subsequent get_conn() call asserts the same file.
+from backend.db.connect import get_canonical_db_path
+_canonical_db = get_canonical_db_path()
+logger.info("Canonical DB path locked: %s", _canonical_db)
+
 # Store schema status for runtime health checks
 from backend.db.connect import get_schema_status
 _schema_status = get_schema_status()
@@ -128,6 +134,35 @@ logger.info(
     len(_schema_status["pending_migrations"]),
     _schema_status["schema_ok"],
 )
+
+# Fail-fast: schema must be healthy
+if not _schema_status["schema_ok"]:
+    logger.error(
+        "STARTUP BLOCKED: schema validation failed. Missing: %s",
+        _schema_status.get("missing_columns", {}),
+    )
+    raise RuntimeError(
+        "Database schema is not healthy. Missing columns: "
+        + str(_schema_status.get("missing_columns", {}))
+    )
+
+# Fail-fast: product catalog must have entries (seed synchronously if empty)
+try:
+    from backend.db.connect import get_conn as _startup_get_conn
+    with _startup_get_conn() as _sc:
+        _cat_count = _sc.cursor().execute("SELECT COUNT(*) AS cnt FROM product_catalog").fetchone()["cnt"]
+    if _cat_count == 0:
+        logger.warning("Product catalog empty at startup — running synchronous refresh")
+        try:
+            from backend.services.product_catalog import get_product_catalog
+            _n = get_product_catalog().refresh_catalog()
+            logger.info("Synchronous catalog refresh: %d products seeded", _n)
+        except Exception as _ce:
+            logger.warning("Catalog sync refresh failed (non-fatal): %s", str(_ce)[:200])
+    else:
+        logger.info("Product catalog: %d products", _cat_count)
+except Exception as _cat_err:
+    logger.warning("Catalog count check skipped (table may not exist): %s", str(_cat_err)[:120])
 
 # Check news sources configuration
 try:

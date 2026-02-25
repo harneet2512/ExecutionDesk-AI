@@ -1,5 +1,5 @@
 """Response templates for message-only intents (no run creation)."""
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 def greeting_response() -> Dict:
@@ -109,9 +109,9 @@ def portfolio_response_template() -> Dict:
 
 def missing_amount_prompt(side: str, asset: Optional[str] = None) -> Dict:
     """Prompt user for missing amount."""
-    asset_text = f" {asset}" if asset else ""
+    from backend.agents.narrative import format_missing_amount_narrative
     return {
-        "content": f"How much{asset_text} do you want to {side}? (e.g., $10 or 0.01 BTC)",
+        "content": format_missing_amount_narrative(side, asset),
         "run_id": None,
         "intent": "TRADE_EXECUTION_INCOMPLETE",
         "status": "AWAITING_INPUT"
@@ -125,58 +125,74 @@ def trade_confirmation_prompt(
     mode: str,
     confirmation_id: Optional[str] = None,
     estimated_price: Optional[float] = None,
-    asset_class: str = "CRYPTO"
+    asset_class: str = "CRYPTO",
+    actions: Optional[List[Dict]] = None,
+    failures: Optional[List[str]] = None,
+    evidence_text: Optional[str] = None,
+    evidence_links: Optional[List[Dict[str, str]]] = None,
+    trade_reasoning: Optional[Any] = None,
 ) -> Dict:
-    """Generate trade confirmation prompt (required for both LIVE and PAPER).
+    """Generate trade confirmation prompt with sequential step layout.
 
-    For STOCK asset class with ASSISTED_LIVE mode, generates an Order Ticket
-    that the user executes manually in their brokerage.
+    For multi-action trades the narrative shows Step 1 as READY and
+    remaining steps as Queued, reflecting the one-order-per-confirm
+    broker submission policy.
     """
-    # Handle ASSISTED_LIVE mode for stocks
-    if asset_class == "STOCK" or mode == "ASSISTED_LIVE":
-        price_text = f"Estimated price: ${estimated_price:,.2f}." if estimated_price else ""
-        content = f"""ORDER TICKET CONFIRMATION
+    from backend.agents.narrative import build_trade_narrative, build_narrative_structured
 
-I will generate an order ticket for you to {side.upper()} ${amount_usd:.2f} of {asset}. {price_text}
+    actions = actions or [{"side": side, "asset": asset, "amount_usd": amount_usd}]
+    failures = failures or []
+    is_sequential = len(actions) > 1
 
-This is not automated execution. After confirming you will receive an order ticket with details. Execute the order manually in your brokerage (Schwab, Fidelity, etc.) and submit your execution receipt to complete the workflow. EOD (end-of-day) stock data is used for analysis.
+    ev_items = evidence_links[:4] if evidence_links else [
+        {"label": evidence_text or "Executable balances snapshot", "href": "url:/runs"},
+        {"label": "Trade preflight report", "href": "url:/runs"},
+    ]
 
-Type CONFIRM to generate the order ticket or CANCEL to abort."""
+    if is_sequential:
+        parts = []
+        for a in actions:
+            a_side = str(a.get("side", "buy")).upper()
+            a_asset = a.get("asset", "UNKNOWN")
+            a_base = a.get("base_size")
+            if a_base:
+                parts.append(f"{a_side} full position of {a_asset}")
+            else:
+                a_amt = float(a.get("amount_usd", 0.0) or 0.0)
+                parts.append(f"{a_side} ${a_amt:,.2f} of {a_asset}")
+        interpretation = " and ".join(parts)
+    else:
+        first = actions[0]
+        first_base = first.get("base_size")
+        if first_base:
+            interpretation = (
+                f"{str(first.get('side', 'buy')).upper()} full position of "
+                f"{first.get('asset', 'UNKNOWN')}"
+            )
+        else:
+            interpretation = (
+                f"{str(first.get('side', 'buy')).upper()} "
+                f"${float(first.get('amount_usd', 0.0) or 0.0):,.2f} of "
+                f"{first.get('asset', 'UNKNOWN')}"
+            )
 
-        return {
-            "content": content,
-            "run_id": None,
-            "intent": "TRADE_CONFIRMATION_PENDING",
-            "status": "AWAITING_CONFIRMATION",
-            "pending_trade": {
-                "side": side,
-                "asset": asset,
-                "amount_usd": amount_usd,
-                "mode": mode,
-                "asset_class": asset_class,
-                "confirmation_id": confirmation_id
-            },
-            "confirmation_id": confirmation_id
-        }
+    content = build_trade_narrative(
+        interpretation=interpretation,
+        actions=actions,
+        failures=failures,
+        is_sequential=is_sequential,
+        evidence_items=ev_items,
+        mode=mode,
+        reasoning=trade_reasoning,
+    )
 
-    # Crypto: LIVE or PAPER mode
-    mode_label = "LIVE ORDER" if mode == "LIVE" else "PAPER TRADE (Simulation)"
+    narrative_structured = None
+    try:
+        narrative_structured = build_narrative_structured(content, evidence_items=ev_items)
+    except Exception:
+        pass
 
-    # Estimate fees (0.6% for market orders on Coinbase)
-    estimated_fees = amount_usd * 0.006
-
-    price_text = f"Estimated price: ${estimated_price:,.2f}." if estimated_price else ""
-    live_warning = "This is a real trade using real funds." if mode == "LIVE" else "This is a simulated trade (no real funds)."
-
-    content = f"""{mode_label} CONFIRMATION
-
-I am about to place a {mode} market {side.upper()} for ${amount_usd:.2f} of {asset}. {price_text}
-
-Estimated fees: ${estimated_fees:.2f}. Total notional: ${amount_usd:.2f}. {live_warning}
-
-Type CONFIRM to place this {mode} order or CANCEL to abort."""
-
-    return {
+    resp: Dict = {
         "content": content,
         "run_id": None,
         "intent": "TRADE_CONFIRMATION_PENDING",
@@ -187,10 +203,14 @@ Type CONFIRM to place this {mode} order or CANCEL to abort."""
             "amount_usd": amount_usd,
             "mode": mode,
             "asset_class": asset_class,
+            "actions": actions,
             "confirmation_id": confirmation_id
         },
-        "confirmation_id": confirmation_id
+        "confirmation_id": confirmation_id,
     }
+    if narrative_structured:
+        resp["narrative_structured"] = narrative_structured
+    return resp
 
 
 def trade_cancelled_response() -> Dict:

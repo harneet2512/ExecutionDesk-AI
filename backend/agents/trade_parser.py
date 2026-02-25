@@ -6,7 +6,8 @@ Supports both crypto and stock asset classes:
 """
 import re
 import os
-from typing import Optional, Literal
+from enum import Enum
+from typing import Optional, Literal, List
 from pydantic import BaseModel
 
 
@@ -26,6 +27,41 @@ CRYPTO_SYMBOLS = {
     'shib': 'SHIB', 'shiba': 'SHIB',
     'xrp': 'XRP', 'ripple': 'XRP',
     'ltc': 'LTC', 'litecoin': 'LTC',
+    'morpho': 'MORPHO',
+    'aave': 'AAVE',
+    'comp': 'COMP', 'compound': 'COMP',
+    'mkr': 'MKR', 'maker': 'MKR',
+    'snx': 'SNX', 'synthetix': 'SNX',
+    'crv': 'CRV', 'curve': 'CRV',
+    'ldo': 'LDO', 'lido': 'LDO',
+    'op': 'OP', 'optimism': 'OP',
+    'arb': 'ARB', 'arbitrum': 'ARB',
+    'sui': 'SUI',
+    'apt': 'APT', 'aptos': 'APT',
+    'near': 'NEAR',
+    'algo': 'ALGO', 'algorand': 'ALGO',
+    'xlm': 'XLM', 'stellar': 'XLM',
+    'icp': 'ICP', 'internet computer': 'ICP',
+    'fil': 'FIL', 'filecoin': 'FIL',
+    'vet': 'VET', 'vechain': 'VET',
+    'hbar': 'HBAR', 'hedera': 'HBAR',
+    'flow': 'FLOW',
+    'mana': 'MANA', 'decentraland': 'MANA',
+    'sand': 'SAND', 'sandbox': 'SAND',
+    'axs': 'AXS', 'axie': 'AXS',
+    'gala': 'GALA',
+    'ape': 'APE', 'apecoin': 'APE',
+    'imx': 'IMX', 'immutable': 'IMX',
+    'fet': 'FET', 'fetch': 'FET',
+    'render': 'RNDR', 'rndr': 'RNDR',
+    'inj': 'INJ', 'injective': 'INJ',
+    'sei': 'SEI',
+    'tia': 'TIA', 'celestia': 'TIA',
+    'jup': 'JUP', 'jupiter': 'JUP',
+    'wif': 'WIF', 'dogwifhat': 'WIF',
+    'bonk': 'BONK',
+    'pepe': 'PEPE',
+    'floki': 'FLOKI',
 }
 
 # Stock symbols and their aliases (common tickers + company names)
@@ -89,7 +125,9 @@ class ParsedTradeCommand(BaseModel):
     asset: Optional[str] = None  # "BTC", "ETH", "AAPL", etc.
     amount_usd: Optional[float] = None
     amount_base: Optional[float] = None  # base units if specified directly
-    amount_mode: str = "quote_usd"  # "quote_usd" or "base_units"
+    amount_mode: str = "quote_usd"
+    amount_pct: Optional[float] = None
+    amount_qty: Optional[float] = None
     venue_symbol: Optional[str] = None  # "BTC-USD" for crypto, "AAPL" for stock
     mode: str = "LIVE"  # LIVE, PAPER, or ASSISTED_LIVE (stocks)
     is_most_profitable: bool = False
@@ -106,6 +144,17 @@ class ParsedTradeCommand(BaseModel):
     is_sell_last_purchase: bool = False
     # Dynamic resolution metadata
     resolution_source: Optional[str] = None  # "hardcoded", "portfolio", "order_history", "catalog"
+    # Portfolio-reference parsing
+    is_portfolio_reference: bool = False
+    portfolio_ref_type: Optional[str] = None  # "largest_holding", etc.
+
+
+class AmountMode(str, Enum):
+    QUOTE_USD = "quote_usd"
+    ALL = "all"
+    PERCENT = "percent"
+    QUANTITY = "quantity"
+    TARGET_ALLOC = "target_alloc"
 
 
 def detect_test_environment() -> bool:
@@ -144,10 +193,22 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
     if _has_sell_last:
         result.is_sell_last_purchase = True
         result.side = "sell"
-    # Parse side (buy/sell)
-    elif 'buy' in text_lower or 'purchase' in text_lower:
+    # Parse side (buy/sell), including natural-language trade verbs.
+    elif (
+        'buy' in text_lower
+        or 'purchase' in text_lower
+        or 'invest' in text_lower
+        or 'pick up' in text_lower
+        or re.search(r'\bput\s+\$?\d+(?:\.\d+)?\s+into\b', text_lower)
+    ):
         result.side = "buy"
-    elif 'sell' in text_lower:
+    elif (
+        'sell' in text_lower
+        or 'dump' in text_lower
+        or 'get rid of' in text_lower
+        or 'rotate out of' in text_lower
+        or ('cut' in text_lower and re.search(r'\b(position|exposure)\b', text_lower))
+    ):
         result.side = "sell"
 
     # Parse "most profitable" and selection criteria
@@ -162,12 +223,29 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
     if any(phrase in _text_norm for phrase in _highest_perf_phrases):
         result.is_most_profitable = True
         result.selection_criteria = "highest_performing"
-    elif 'moving up' in _text_norm or 'momentum' in _text_norm or 'rising' in _text_norm:
+    elif any(phrase in _text_norm for phrase in (
+        'moving up', 'momentum', 'rising',
+        'biggest mover', 'top mover', 'largest mover',
+        'most momentum', 'best momentum',
+    )):
         result.is_most_profitable = True
         result.selection_criteria = "momentum"
-    elif 'worst performing' in _text_norm or 'lowest performing' in _text_norm:
+    elif (
+        any(phrase in _text_norm for phrase in (
+            'worst performing', 'lowest performing',
+            'down the most', 'biggest loser', 'worst crypto', 'least performing',
+        ))
+        or re.search(r'whichever.*down|down.*most', _text_norm)
+    ):
         result.is_most_profitable = True
         result.selection_criteria = "lowest_performing"
+        if any(phrase in _text_norm for phrase in (
+            'my holdings', 'my position', 'my crypto', 'i hold', 'i own',
+            'whichever', 'of my',
+        )):
+            result.universe_constraint = "holdings_only"
+            if (result.side or "").lower() == "sell":
+                result.amount_mode = AmountMode.ALL.value
 
     # Parse threshold filters (e.g., "up 20%", "down 5%", "> 10%")
     threshold_match = re.search(r'(?:up|above|over|>)\s*(\d+(?:\.\d+)?)\s*%', text_lower)
@@ -226,6 +304,47 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
             elif 'last hour' in text_lower or '1 hour' in text_lower or '1h' in text_lower:
                 result.lookback_hours = 1.0
 
+    # Parse amount mode qualifiers first.
+    # Interpret "sell all / close / exit / liquidate" and
+    # "sell my complete holding/position" as ALL.
+    full_position_sell = bool(
+        re.search(r"\bsell\b(?:\s+my)?\s+(?:complete|entire|full)\s+(?:holding|position)\b", text_lower)
+    )
+    if (
+        re.search(r'\b(close|exit|liquidate)\b', text_lower)
+        or re.search(r'\bsell\s+(all|everything|entire|entirely|full)\b', text_lower)
+        or re.search(r'\b(dump|get rid of)\b', text_lower)
+        or re.search(r'\brotate out of\b', text_lower)
+        or full_position_sell
+    ):
+        result.amount_mode = AmountMode.ALL.value
+        if result.side is None:
+            result.side = "sell"
+
+    multi_holdings_sell = bool(
+        re.search(r'\bsell\s+(all|everything|entire|entirely|full)\b', text_lower)
+        and re.search(r'\b(holdings?|positions?|portfolio)\b', text_lower)
+    ) or bool(re.search(r'\b(close|exit|liquidate)\s+(all|everything|portfolio|positions?)\b', text_lower))
+
+    # Detect percentage instructions.
+    # "half" => 50%, "quarter" => 25%, explicit "N%".
+    pct_match = re.search(r'(\d+(?:\.\d+)?)\s*%', text_lower)
+    if pct_match:
+        result.amount_mode = AmountMode.PERCENT.value
+        result.amount_pct = float(pct_match.group(1))
+    elif re.search(r'\bhalf\b', text_lower):
+        result.amount_mode = AmountMode.PERCENT.value
+        result.amount_pct = 50.0
+    elif re.search(r'\b(a\s+quarter|quarter)\b', text_lower):
+        result.amount_mode = AmountMode.PERCENT.value
+        result.amount_pct = 25.0
+
+    # Detect target allocation instructions.
+    # e.g. "rebalance to 60% BTC"
+    if re.search(r'\brebalance\b', text_lower) and pct_match:
+        result.amount_mode = AmountMode.TARGET_ALLOC.value
+        result.amount_pct = float(pct_match.group(1))
+
     # Parse amount (USD) - support multiple formats:
     # - "$10" or "$10.50" (dollar sign before)
     # - "10$" or "10.50$" (dollar sign after)
@@ -236,24 +355,37 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
     usd_match = re.search(r'\$\s*(\d+(?:\.\d+)?)', text)
     if usd_match:
         result.amount_usd = float(usd_match.group(1))
+        result.amount_mode = AmountMode.QUOTE_USD.value
     
     # Format 2: X$ (dollar sign after amount)
     if result.amount_usd is None:
         usd_match = re.search(r'(\d+(?:\.\d+)?)\s*\$', text)
         if usd_match:
             result.amount_usd = float(usd_match.group(1))
+            result.amount_mode = AmountMode.QUOTE_USD.value
     
     # Format 3: X USD or X usd (with or without space)
     if result.amount_usd is None:
         usd_match = re.search(r'(\d+(?:\.\d+)?)\s*usd\b', text_lower)
         if usd_match:
             result.amount_usd = float(usd_match.group(1))
+            result.amount_mode = AmountMode.QUOTE_USD.value
     
     # Format 4: X dollars or X dollar
     if result.amount_usd is None:
         usd_match = re.search(r'(\d+(?:\.\d+)?)\s*dollars?\b', text_lower)
         if usd_match:
             result.amount_usd = float(usd_match.group(1))
+            result.amount_mode = AmountMode.QUOTE_USD.value
+
+    # Parse base-quantity amount for "sell/buy 0.5 BTC" style commands.
+    qty_match = re.search(
+        r'\b(?:buy|sell|close|exit|liquidate|rebalance|reduce)\s+(\d+(?:\.\d+)?)\s+([a-zA-Z]{2,10})\b',
+        text_lower,
+    )
+    if qty_match and result.amount_usd is None:
+        result.amount_mode = AmountMode.QUANTITY.value
+        result.amount_qty = float(qty_match.group(1))
 
     # === Detect asset class from keywords first ===
     has_crypto_keyword = any(kw in text_lower for kw in CRYPTO_KEYWORDS)
@@ -275,6 +407,25 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
         if re.search(rf'\b{re.escape(alias)}\b', text_lower):
             found_stock = symbol
             break
+
+    # Detect portfolio-reference phrases (e.g., "my biggest position").
+    if re.search(r'\b(biggest position|largest holding|top holding|biggest holding|largest position)\b', text_lower):
+        result.is_portfolio_reference = True
+        result.portfolio_ref_type = "largest_holding"
+    elif (
+        not result.is_most_profitable
+        and re.search(r'\b(biggest loser|down the most)\b', text_lower)
+        and 'holding' in text_lower
+    ):
+        # Heuristic fallback: map "sell biggest loser in my holdings" to a
+        # concrete held symbol during portfolio-resolution phase.
+        result.is_portfolio_reference = True
+        result.portfolio_ref_type = "largest_holding"
+        if result.side is None:
+            result.side = "sell"
+        # For holdings-relative sell phrasing, "sell whichever ... down the most"
+        # implies full liquidation of that selected holding.
+        result.amount_mode = AmountMode.ALL.value
 
     # === Determine asset_class and asset ===
     # Priority: explicit keyword > symbol lookup > default (CRYPTO)
@@ -357,7 +508,10 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
 
         for tok in _candidate_tokens:
             # Skip common English words and command words
-            if tok.upper() in {'BUY', 'SELL', 'USD', 'THE', 'FOR', 'AND', 'LAST', 'MOST', 'BEST', 'TOP', 'OF', 'MY', 'IN', 'AT'}:
+            if tok.upper() in {
+                'BUY', 'SELL', 'USD', 'THE', 'FOR', 'AND', 'LAST', 'MOST', 'BEST', 'TOP', 'OF', 'MY',
+                'IN', 'AT', 'ALL', 'FULL', 'EVERYTHING', 'HOLDING', 'HOLDINGS', 'POSITION', 'POSITIONS', 'PORTFOLIO'
+            }:
                 continue
             try:
                 from backend.services.symbol_resolver import resolve as resolve_symbol
@@ -371,14 +525,77 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
             except Exception:
                 pass
 
+    # Enforce multi-asset semantics for "sell all holdings/everything/positions".
+    # Keep single-asset semantics for "sell all of <symbol>" when an asset is explicitly identified.
+    if multi_holdings_sell:
+        explicit_single_asset = bool(re.search(r'\b(?:sell|close|exit|liquidate)\s+(?:all|full|entire)\s+of\s+([a-zA-Z0-9_-]+)\b', text_lower))
+        if not explicit_single_asset:
+            result.asset = None
+            result.venue_symbol = None
+
     return result
 
 
 def is_missing_amount(parsed: ParsedTradeCommand) -> bool:
     """Check if amount is missing from parsed command."""
+    if parsed.amount_mode == AmountMode.ALL.value:
+        return False
+    if parsed.amount_mode == AmountMode.PERCENT.value and parsed.amount_pct is not None:
+        return False
+    if parsed.amount_mode == AmountMode.QUANTITY.value and parsed.amount_qty is not None:
+        return False
+    if parsed.amount_mode == AmountMode.TARGET_ALLOC.value and parsed.amount_pct is not None:
+        return False
     return parsed.amount_usd is None
 
 
 def is_missing_asset(parsed: ParsedTradeCommand) -> bool:
     """Check if asset is missing (and not a 'most profitable' query)."""
     return parsed.asset is None and not parsed.is_most_profitable
+
+
+def parse_trade_commands(text: str) -> List[ParsedTradeCommand]:
+    """
+    Parse multi-action trade instructions into a list of ParsedTradeCommand.
+
+    Examples:
+      "buy $10 BTC and $20 ETH" -> two commands
+      "sell half BTC; buy $50 ETH" -> two commands
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+
+    # First split on explicit separators.
+    chunks: List[str] = []
+    for part in re.split(r'\s*;\s*|\s+\bthen\b\s+', raw, flags=re.IGNORECASE):
+        part = part.strip()
+        if not part:
+            continue
+        # Secondary split on "and" only when it looks like separate order phrases.
+        subparts = re.split(r'\s+\band\b\s+', part, flags=re.IGNORECASE)
+        chunks.extend([s.strip() for s in subparts if s.strip()])
+
+    if not chunks:
+        return [parse_trade_command(raw)]
+
+    parsed_commands: List[ParsedTradeCommand] = []
+    current_side: Optional[str] = None
+
+    for chunk in chunks:
+        chunk_lower = chunk.lower()
+        has_side = bool(
+            re.search(r'\b(buy|sell|close|exit|liquidate|rebalance|reduce|invest|dump|rotate|cut)\b', chunk_lower)
+            or ('pick up' in chunk_lower)
+            or ('get rid of' in chunk_lower)
+            or bool(re.search(r'\bput\s+\$?\d+(?:\.\d+)?\s+into\b', chunk_lower))
+        )
+        if not has_side and current_side:
+            chunk = f"{current_side} {chunk}"
+
+        parsed = parse_trade_command(chunk)
+        if parsed.side:
+            current_side = parsed.side
+        parsed_commands.append(parsed)
+
+    return parsed_commands

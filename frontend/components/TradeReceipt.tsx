@@ -1,8 +1,52 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { apiFetchSafe } from '@/lib/api';
 import { formatTradeOutcome, formatOrderId } from '@/lib/tradeFormatters';
+
+// ---------------------------------------------------------------------------
+// Card-scoped confetti (no external library – pure CSS animation)
+// ---------------------------------------------------------------------------
+const CONFETTI_COLORS = ['#22c55e', '#16a34a', '#4ade80', '#86efac', '#ffffff', '#a3e635'];
+const CONFETTI_COUNT = 28;
+
+function injectConfettiKeyframes() {
+    const id = 'trade-receipt-confetti-kf';
+    if (typeof document === 'undefined' || document.getElementById(id)) return;
+    const s = document.createElement('style');
+    s.id = id;
+    s.textContent = `@keyframes confetti-fall{0%{transform:translateY(-8px) rotate(0deg);opacity:1}100%{transform:translateY(320px) rotate(720deg);opacity:0}}`;
+    document.head.appendChild(s);
+}
+
+function CardConfetti() {
+    const particles = useRef(
+        Array.from({ length: CONFETTI_COUNT }, (_, i) => ({
+            left: `${(i * 3.7 + Math.random() * 4) % 100}%`,
+            color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+            delay: `${(i * 0.07).toFixed(2)}s`,
+            dur: `${(0.75 + (i % 5) * 0.12).toFixed(2)}s`,
+            size: i % 3 === 0 ? 5 : 7,
+            round: i % 4 === 0,
+        }))
+    ).current;
+
+    useEffect(() => { injectConfettiKeyframes(); }, []);
+
+    return (
+        <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
+            {particles.map((p, i) => (
+                <span key={i} style={{
+                    position: 'absolute', top: '-8px', left: p.left,
+                    width: p.size, height: p.size,
+                    borderRadius: p.round ? '50%' : '2px',
+                    backgroundColor: p.color,
+                    animation: `confetti-fall ${p.dur} ${p.delay} ease-in forwards`,
+                }} />
+            ))}
+        </div>
+    );
+}
 
 interface TradeReceiptProps {
     runId: string;
@@ -19,9 +63,22 @@ interface TradeResult {
     avg_fill_price?: number;
     fees?: number;
     created_at?: string;
+    status_updated_at?: string;
     mode?: string;
     error?: string;
     reason_code?: string;
+    venue?: {
+        name?: string;
+        execution_mode?: string;
+        order_type?: string;
+    };
+}
+
+function parsePositiveMs(value: string | undefined, fallback: number): number {
+    if (!value) return fallback;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return parsed;
 }
 
 export default function TradeReceipt({ runId, status: parentStatus }: TradeReceiptProps) {
@@ -29,6 +86,13 @@ export default function TradeReceipt({ runId, status: parentStatus }: TradeRecei
     const [newsBrief, setNewsBrief] = useState<{ headline?: string; trend?: string } | null>(null);
     const [loading, setLoading] = useState(true);
     const [copied, setCopied] = useState(false);
+    const [fillWatchTimedOut, setFillWatchTimedOut] = useState(false);
+    const [showConfetti, setShowConfetti] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
+    const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
+    const prevStatusRef = useRef<string>('');
+    const fillPollTimeoutMs = parsePositiveMs(process.env.NEXT_PUBLIC_FILL_POLL_TIMEOUT_MS, 60000);
+    const fillPollIntervalMs = parsePositiveMs(process.env.NEXT_PUBLIC_FILL_POLL_INTERVAL_MS, 5000);
 
     // Determine if the run has reached a terminal state
     const isTerminal = parentStatus
@@ -87,18 +151,18 @@ export default function TradeReceipt({ runId, status: parentStatus }: TradeRecei
                         result.fees = order.total_fees;
                     }
                     result.created_at = result.created_at || order.created_at;
-                    
+                    result.status_updated_at = order.status_updated_at || undefined;
+
                     // CRITICAL: Use order-level status to determine actual trade outcome
                     // Don't show "COMPLETED" if order wasn't actually filled
                     if (order.status === 'FILLED') {
-                        result.status = 'COMPLETED';
+                        result.status = 'FILLED';
                     } else if (order.status === 'REJECTED' || order.status === 'FAILED') {
                         result.status = order.status;
                         result.error = order.status_reason || 'Order was rejected by the exchange';
                     } else if (order.status === 'SUBMITTED' || order.status === 'PENDING' || order.status === 'OPEN') {
-                        // Order was submitted but not yet filled - don't show as COMPLETED
-                        result.status = 'PENDING';
-                        result.error = 'Order submitted but not filled. Check Coinbase for status.';
+                        result.status = 'SUBMITTED';
+                        result.error = 'Order submitted. You can confirm fill in your Coinbase app.';
                     } else if (order.status === 'CANCELED' || order.status === 'EXPIRED') {
                         result.status = order.status;
                         result.error = order.status_reason || `Order was ${order.status.toLowerCase()}`;
@@ -144,6 +208,11 @@ export default function TradeReceipt({ runId, status: parentStatus }: TradeRecei
                         if (nb && (nb.headline || nb.trend)) {
                             setNewsBrief({ headline: nb.headline, trend: nb.trend });
                         }
+
+                        // Extract venue from trade_receipt artifact
+                        if (trace?.trade_receipt?.venue) {
+                            result.venue = trace.trade_receipt.venue;
+                        }
                     }
                 } catch (traceErr) {
                     console.log('Could not fetch trace:', traceErr);
@@ -162,6 +231,117 @@ export default function TradeReceipt({ runId, status: parentStatus }: TradeRecei
 
         fetchTradeResult();
     }, [runId, isTerminal]);
+
+    useEffect(() => {
+        if (!tradeResult?.order_id) return;
+        const statusUpper = (tradeResult.status || '').toUpperCase();
+        const isPendingStatus = ['SUBMITTED', 'PENDING', 'OPEN', 'PENDING_FILL', 'PARTIALLY_FILLED'].includes(statusUpper);
+        if (!isPendingStatus) return;
+        if ((tradeResult.mode || '').toUpperCase() !== 'LIVE') return;
+
+        let active = true;
+        let polls = 0;
+        const maxPolls = Math.max(1, Math.ceil(fillPollTimeoutMs / fillPollIntervalMs));
+
+        const pollFillStatus = async () => {
+            if (!active || !tradeResult.order_id) return;
+            try {
+                const data = await apiFetchSafe(`/api/v1/orders/${tradeResult.order_id}/fill-status`);
+                if (!active || !data) return;
+
+                const nextStatus = String(data.status || tradeResult.status || '').toUpperCase();
+                setLastCheckedAt(new Date());
+                setTradeResult(prev => {
+                    if (!prev) return prev;
+                    return {
+                        ...prev,
+                        status: nextStatus || prev.status,
+                        filled_qty: typeof data.filled_qty === 'number' ? data.filled_qty : prev.filled_qty,
+                        avg_fill_price: typeof data.avg_fill_price === 'number' ? data.avg_fill_price : prev.avg_fill_price,
+                        error: data.fill_confirmed
+                            ? undefined
+                            : 'Order submitted. You can confirm fill in your Coinbase app.',
+                    };
+                });
+
+                if (nextStatus === 'FILLED') {
+                    active = false;
+                    setFillWatchTimedOut(false);
+                }
+            } catch {
+                // Best-effort watcher; keep current receipt state if refresh fails.
+            }
+        };
+
+        const interval = setInterval(() => {
+            polls += 1;
+            if (!active) {
+                clearInterval(interval);
+                return;
+            }
+            if (polls > maxPolls) {
+                clearInterval(interval);
+                setFillWatchTimedOut(true);
+                setTradeResult(prev => {
+                    if (!prev) return prev;
+                    return {
+                        ...prev,
+                        // Keep status pending/open/submitted; never mark timeout as failed.
+                        status: ['SUBMITTED', 'PENDING', 'OPEN', 'PENDING_FILL', 'PARTIALLY_FILLED'].includes(
+                            String(prev.status || '').toUpperCase()
+                        )
+                            ? prev.status
+                            : 'SUBMITTED',
+                        error: 'Order submitted; fill not confirmed within 60s. Check Coinbase app for final status.',
+                    };
+                });
+                return;
+            }
+            pollFillStatus();
+        }, fillPollIntervalMs);
+
+        // Start immediately rather than waiting first 5 seconds.
+        pollFillStatus();
+
+        return () => {
+            active = false;
+            clearInterval(interval);
+        };
+    }, [tradeResult?.order_id, tradeResult?.status, tradeResult?.mode, fillPollTimeoutMs, fillPollIntervalMs]);
+
+    // Detect FILLED transition → trigger card-scoped confetti (once per fill, idempotent)
+    useEffect(() => {
+        const current = (tradeResult?.status || '').toUpperCase();
+        if (current === 'FILLED' && prevStatusRef.current !== 'FILLED') {
+            setShowConfetti(true);
+            const t = setTimeout(() => setShowConfetti(false), 3200);
+            prevStatusRef.current = current;
+            return () => clearTimeout(t);
+        }
+        prevStatusRef.current = current;
+    }, [tradeResult?.status]);
+
+    // Manual "Refresh status" – one-shot fill-status call for LIVE pending orders
+    const handleRefreshStatus = useCallback(async () => {
+        if (!tradeResult?.order_id || refreshing) return;
+        setRefreshing(true);
+        try {
+            const data = await apiFetchSafe(`/api/v1/orders/${tradeResult.order_id}/fill-status`);
+            if (data) {
+                const nextStatus = String(data.status || tradeResult.status || '').toUpperCase();
+                setLastCheckedAt(new Date());
+                setTradeResult(prev => prev ? {
+                    ...prev,
+                    status: nextStatus || prev.status,
+                    filled_qty: typeof data.filled_qty === 'number' ? data.filled_qty : prev.filled_qty,
+                    avg_fill_price: typeof data.avg_fill_price === 'number' ? data.avg_fill_price : prev.avg_fill_price,
+                    error: data.fill_confirmed ? undefined : prev.error,
+                } : prev);
+                if (nextStatus === 'FILLED') setFillWatchTimedOut(false);
+            }
+        } catch { /* best-effort */ }
+        finally { setRefreshing(false); }
+    }, [tradeResult?.order_id, tradeResult?.status, refreshing]);
 
     const handleCopy = async () => {
         if (!tradeResult) return;
@@ -198,11 +378,19 @@ Mode: ${tradeResult.mode || 'N/A'}`;
     }
 
     if (loading) {
-        return null; // Don't show loading state - just wait
+        return (
+            <div className="mt-3 p-3 rounded-lg border theme-surface theme-border text-sm theme-text-secondary animate-pulse">
+                Loading trade result...
+            </div>
+        );
     }
 
     if (!tradeResult) {
-        return null; // No trade result available
+        return (
+            <div className="mt-3 p-3 rounded-lg border theme-surface theme-border text-sm theme-text-secondary">
+                Trade result unavailable. Check the run details for more information.
+            </div>
+        );
     }
 
     // Bug 2 fix: Use formatter for consistent status display
@@ -216,8 +404,32 @@ Mode: ${tradeResult.mode || 'N/A'}`;
     // Bug 4 fix: Format order ID appropriately for PAPER vs LIVE
     const displayOrderId = formatOrderId(tradeResult.order_id, tradeResult.mode);
 
+    // Truth-model banner: run COMPLETED but order not yet filled
+    const runIsCompleted = (parentStatus || '').toUpperCase() === 'COMPLETED';
+    const orderNotFilled = tradeResult.status
+        ? !['FILLED'].includes(tradeResult.status.toUpperCase()) && tradeResult.order_id
+        : false;
+    const showRunCompletedOrderPendingBanner = runIsCompleted && orderNotFilled && isPending;
+
+    // Show refresh button for LIVE non-terminal pending orders
+    const canRefresh = (tradeResult.mode || '').toUpperCase() === 'LIVE' && isPending && !!tradeResult.order_id;
+
     return (
-        <div className="mt-3 p-3 rounded-lg border theme-surface theme-border">
+        <div className="mt-3 p-3 rounded-lg border theme-surface theme-border relative overflow-hidden">
+            {/* Card-scoped confetti – only fires when order transitions to FILLED */}
+            {showConfetti && <CardConfetti />}
+
+            {/* Truth-model banner: explicit message when run done but fill pending */}
+            {showRunCompletedOrderPendingBanner && (
+                <div className="mb-3 p-2 bg-[var(--color-status-warning-bg)] border border-[var(--color-status-warning)]/30 rounded text-xs text-[var(--color-status-warning)] flex items-start gap-2">
+                    <span className="mt-0.5">&#9432;</span>
+                    <span>
+                        <strong>Run completed</strong> — workflow finished and order submitted to venue.
+                        Fill not confirmed yet. Check your Coinbase app or use Refresh below.
+                    </span>
+                </div>
+            )}
+
             {/* Header - Bug 2 fix: More prominent status display with clear visual distinction */}
             <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
@@ -266,6 +478,69 @@ Mode: ${tradeResult.mode || 'N/A'}`;
                 </button>
             </div>
 
+            {/* Order Lifecycle Bar */}
+            <div className="mb-3 flex items-center gap-1 text-xs">
+                {(() => {
+                    const steps = [
+                        { label: 'Submitted', key: 'SUBMITTED', ts: tradeResult.created_at },
+                        { label: 'Pending', key: 'PENDING', ts: undefined },
+                        { label: isSuccess ? 'Filled' : isFailed ? 'Failed' : isCanceled ? 'Canceled' : 'Awaiting',
+                          key: isSuccess ? 'FILLED' : isFailed ? 'FAILED' : isCanceled ? 'CANCELED' : 'AWAITING',
+                          ts: tradeResult.status_updated_at },
+                    ];
+                    const statusUpper = (tradeResult.status || '').toUpperCase();
+                    const currentIdx = statusUpper === 'FILLED' ? 2
+                        : ['FAILED', 'REJECTED'].includes(statusUpper) ? 2
+                        : ['CANCELED', 'EXPIRED'].includes(statusUpper) ? 2
+                        : ['PENDING', 'OPEN', 'PENDING_FILL'].includes(statusUpper) ? 1
+                        : 0;
+                    return steps.map((step, i) => {
+                        const reached = i <= currentIdx;
+                        const isCurrent = i === currentIdx;
+                        const failedTerminal = isCurrent && (isFailed || isCanceled);
+                        const color = failedTerminal ? 'bg-[var(--color-status-error)]'
+                            : reached ? 'bg-[var(--color-status-success)]'
+                            : 'bg-neutral-300 dark:bg-neutral-700';
+                        const textColor = failedTerminal ? 'text-[var(--color-status-error)]'
+                            : reached ? 'theme-text' : 'theme-text-secondary';
+                        return (
+                            <div key={step.key} className="flex items-center gap-1">
+                                {i > 0 && <div className={`w-8 h-0.5 ${reached ? (failedTerminal ? 'bg-[var(--color-status-error)]' : 'bg-[var(--color-status-success)]') : 'bg-neutral-300 dark:bg-neutral-700'}`} />}
+                                <div className="flex flex-col items-center">
+                                    <div className={`w-3 h-3 rounded-full ${color}`} />
+                                    <span className={`mt-0.5 ${textColor} whitespace-nowrap`}>{step.label}</span>
+                                    {step.ts && (
+                                        <span className="theme-text-secondary text-[10px]">
+                                            {(() => { try { return new Date(step.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch { return ''; } })()}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    });
+                })()}
+            </div>
+
+            {/* Requested vs Filled Summary */}
+            {(tradeResult.notional_usd || tradeResult.filled_qty) && (
+                <div className="mb-3 p-2 theme-elevated rounded text-xs flex flex-wrap gap-x-4 gap-y-1">
+                    {tradeResult.notional_usd !== undefined && (
+                        <span>Requested: <strong>{typeof tradeResult.notional_usd === 'number' && isFinite(tradeResult.notional_usd)
+                            ? `$${tradeResult.notional_usd.toFixed(2)}` : 'Not available: order was not executed'}</strong></span>
+                    )}
+                    {tradeResult.filled_qty !== undefined && typeof tradeResult.filled_qty === 'number' && tradeResult.filled_qty > 0 && (
+                        <span>Filled: <strong>{tradeResult.filled_qty.toFixed(8)} {tradeResult.symbol?.replace('-USD', '') || ''}</strong>
+                            {tradeResult.avg_fill_price !== undefined && typeof tradeResult.avg_fill_price === 'number' && isFinite(tradeResult.avg_fill_price) && (
+                                <> @ <strong>${tradeResult.avg_fill_price.toFixed(2)}</strong></>
+                            )}
+                        </span>
+                    )}
+                    {tradeResult.fees !== undefined && typeof tradeResult.fees === 'number' && isFinite(tradeResult.fees) && (
+                        <span>Fees: <strong>${tradeResult.fees.toFixed(4)}</strong></span>
+                    )}
+                </div>
+            )}
+
             {/* Order Details Grid */}
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                 {tradeResult.side && (
@@ -286,10 +561,10 @@ Mode: ${tradeResult.mode || 'N/A'}`;
 
                 {tradeResult.notional_usd !== undefined && (
                     <>
-                        <span className="theme-text-secondary">Notional</span>
+                        <span className="theme-text-secondary">Requested</span>
                         <span className="font-medium theme-text">
                             {typeof tradeResult.notional_usd === 'number' && isFinite(tradeResult.notional_usd)
-                                ? `$${tradeResult.notional_usd.toFixed(2)}` : 'N/A'}
+                                ? `$${tradeResult.notional_usd.toFixed(2)}` : 'Not available: order was not executed'}
                         </span>
                     </>
                 )}
@@ -298,8 +573,11 @@ Mode: ${tradeResult.mode || 'N/A'}`;
                     <>
                         <span className="theme-text-secondary">Filled</span>
                         <span className="font-medium theme-text">
-                            {typeof tradeResult.filled_qty === 'number' && isFinite(tradeResult.filled_qty)
-                                ? tradeResult.filled_qty.toFixed(8) : 'N/A'}
+                            {isPending && (!tradeResult.filled_qty || tradeResult.filled_qty === 0)
+                                ? 'Pending fill'
+                                : typeof tradeResult.filled_qty === 'number' && isFinite(tradeResult.filled_qty)
+                                ? `${tradeResult.filled_qty.toFixed(8)} ${tradeResult.symbol?.replace('-USD', '') || ''}`
+                                : '\u2014'}
                         </span>
                     </>
                 )}
@@ -308,8 +586,11 @@ Mode: ${tradeResult.mode || 'N/A'}`;
                     <>
                         <span className="theme-text-secondary">Avg Price</span>
                         <span className="font-medium theme-text">
-                            {typeof tradeResult.avg_fill_price === 'number' && isFinite(tradeResult.avg_fill_price)
-                                ? `$${tradeResult.avg_fill_price.toFixed(2)}` : 'N/A'}
+                            {isPending && (!tradeResult.avg_fill_price || tradeResult.avg_fill_price === 0)
+                                ? 'Pending fill'
+                                : typeof tradeResult.avg_fill_price === 'number' && isFinite(tradeResult.avg_fill_price)
+                                ? `$${tradeResult.avg_fill_price.toFixed(2)}`
+                                : '\u2014'}
                         </span>
                     </>
                 )}
@@ -319,7 +600,8 @@ Mode: ${tradeResult.mode || 'N/A'}`;
                         <span className="theme-text-secondary">Fees</span>
                         <span className="font-medium theme-text">
                             {typeof tradeResult.fees === 'number' && isFinite(tradeResult.fees)
-                                ? `$${tradeResult.fees.toFixed(4)}` : 'N/A'}
+                                ? `$${tradeResult.fees.toFixed(4)}`
+                                : isFailed || isCanceled ? 'Not available: order did not fill' : 'Pending fill confirmation'}
                         </span>
                     </>
                 )}
@@ -330,6 +612,40 @@ Mode: ${tradeResult.mode || 'N/A'}`;
                         <span className="font-mono text-xs theme-text-secondary truncate" title={tradeResult.order_id}>
                             {displayOrderId}
                             {isPaper && <span className="ml-1 theme-text-muted">(paper)</span>}
+                        </span>
+                    </>
+                )}
+
+                {tradeResult.venue?.name && (
+                    <>
+                        <span className="theme-text-secondary">Venue</span>
+                        <span className="font-medium theme-text">{tradeResult.venue.name}</span>
+                    </>
+                )}
+
+                {tradeResult.created_at && (
+                    <>
+                        <span className="theme-text-secondary">Submitted</span>
+                        <span className="font-medium theme-text text-xs">
+                            {(() => { try { return new Date(tradeResult.created_at).toLocaleString(); } catch { return '\u2014'; } })()}
+                        </span>
+                    </>
+                )}
+
+                {tradeResult.status_updated_at && (
+                    <>
+                        <span className="theme-text-secondary">Last Updated</span>
+                        <span className="font-medium theme-text text-xs">
+                            {(() => { try { return new Date(tradeResult.status_updated_at).toLocaleString(); } catch { return '\u2014'; } })()}
+                        </span>
+                    </>
+                )}
+
+                {lastCheckedAt && (
+                    <>
+                        <span className="theme-text-secondary">Last checked</span>
+                        <span className="font-medium theme-text text-xs">
+                            {lastCheckedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                         </span>
                     </>
                 )}
@@ -346,10 +662,34 @@ Mode: ${tradeResult.mode || 'N/A'}`;
                 </span>
             </div>
 
-            {/* Warning message for pending orders */}
+            {/* Warning message for pending orders + Refresh button */}
             {isPending && (
                 <div className="mt-3 p-2 bg-[var(--color-status-warning-bg)] rounded text-sm text-[var(--color-status-warning)] border border-[var(--color-status-warning)]/20">
-                    <span className="font-medium">⚠️ Order Pending:</span> Order was submitted but not confirmed filled. Check your Coinbase account for actual status.
+                    <div className="flex items-start justify-between gap-2">
+                        <div>
+                            <span className="font-medium">Order submitted; fill pending.</span>{' '}
+                            {fillWatchTimedOut
+                                ? 'Not confirmed within 60s. Check Coinbase app for final status.'
+                                : 'Check Coinbase app too.'}
+                        </div>
+                        {canRefresh && (
+                            <button
+                                onClick={handleRefreshStatus}
+                                disabled={refreshing}
+                                className="flex-shrink-0 px-2 py-1 text-xs font-medium rounded border border-[var(--color-status-warning)]/50 hover:bg-[var(--color-status-warning)]/10 transition-colors disabled:opacity-50"
+                                title="Check fill status from Coinbase"
+                            >
+                                {refreshing ? 'Checking...' : 'Refresh status'}
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Paper trade footnote */}
+            {isPaper && (
+                <div className="mt-2 pt-2 border-t theme-border text-xs theme-text-secondary">
+                    Paper trade -- no real funds used. Fills are simulated at market price.
                 </div>
             )}
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import EvidenceList from './EvidenceList';
+import { type Artifact, normalizeArtifacts } from '@/lib/artifacts';
 
 interface ArtifactPanelProps {
     runId: string;
@@ -11,9 +12,28 @@ interface ArtifactPanelProps {
 
 export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelProps) {
     const [activeTab, setActiveTab] = useState<'plan' | 'evidence' | 'constraints' | 'decision' | 'thinking'>('plan');
-    const [artifacts, setArtifacts] = useState<any[]>([]);
-    const [evidence, setEvidence] = useState<any[]>([]);
+    const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+    const [evidence, setEvidence] = useState<Record<string, unknown>[]>([]);
     const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const isDebugUI = () => {
+        try {
+            return process.env.NEXT_PUBLIC_DEBUG_UI === '1' || localStorage.getItem('DEBUG_UI') === '1';
+        } catch {
+            return false;
+        }
+    };
+
+    const toRecordArray = (input: unknown): Record<string, unknown>[] => {
+        if (Array.isArray(input)) {
+            return input.filter((item) => item && typeof item === 'object') as Record<string, unknown>[];
+        }
+        return [];
+    };
+
+    const findByType = (items: Artifact[], type: string) =>
+        items.find((a) => a.artifact_type === type || a.type === type);
 
     useEffect(() => {
         if (isOpen && runId) {
@@ -23,18 +43,49 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
 
     const fetchData = async () => {
         setLoading(true);
+        setError(null);
         try {
             // Fetch artifacts
             const artifactsRes = await fetch(`/api/v1/news/runs/${runId}/artifacts`);
-            const artifactsData = await artifactsRes.json();
-            setArtifacts(artifactsData);
+            if (!artifactsRes.ok) {
+                setArtifacts([]);
+                setEvidence([]);
+                setError(`Artifact data could not be loaded (HTTP ${artifactsRes.status}).`);
+                return;
+            }
+            const artifactsData: unknown = await artifactsRes.json();
+            const normalizedArtifacts = normalizeArtifacts(artifactsData);
+            setArtifacts(normalizedArtifacts);
+            if (isDebugUI()) {
+                console.log('[ArtifactPanel] artifacts payload shape', {
+                    inputType: typeof artifactsData,
+                    isArray: Array.isArray(artifactsData),
+                    normalizedCount: normalizedArtifacts.length,
+                });
+            }
 
             // Fetch evidence
             const evidenceRes = await fetch(`/api/v1/news/runs/${runId}/evidence`);
-            const evidenceData = await evidenceRes.json();
-            setEvidence(evidenceData);
+            if (!evidenceRes.ok) {
+                setEvidence([]);
+                setError((prev) => prev ?? `Evidence data could not be loaded (HTTP ${evidenceRes.status}).`);
+                return;
+            }
+            const evidenceData: unknown = await evidenceRes.json();
+            const normalizedEvidence = toRecordArray(evidenceData);
+            setEvidence(normalizedEvidence);
+            if (isDebugUI()) {
+                console.log('[ArtifactPanel] evidence payload shape', {
+                    inputType: typeof evidenceData,
+                    isArray: Array.isArray(evidenceData),
+                    normalizedCount: normalizedEvidence.length,
+                });
+            }
         } catch (e) {
             console.error("Failed to fetch artifacts", e);
+            setArtifacts([]);
+            setEvidence([]);
+            setError("Artifact data could not be loaded. The run may not have emitted artifacts or the endpoint returned malformed data.");
         } finally {
             setLoading(false);
         }
@@ -44,10 +95,33 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
 
     const renderContent = () => {
         if (loading) return <div className="p-4 text-center">Loading artifacts...</div>;
+        if (error) {
+            return (
+                <div className="p-4 space-y-3">
+                    <div className="text-sm text-[var(--color-status-error)]">{error}</div>
+                    <div className="text-xs theme-text-secondary">
+                        Next step: open Execution Trace and confirm this run emitted artifact records.
+                    </div>
+                </div>
+            );
+        }
+        if (artifacts.length === 0 && evidence.length === 0) {
+            return (
+                <div className="p-4 space-y-2">
+                    <h3 className="text-lg font-medium">No artifacts available</h3>
+                    <p className="text-sm theme-text-secondary">
+                        This run has no artifact records yet, or artifact logging is disabled for this workflow.
+                    </p>
+                    <p className="text-xs theme-text-secondary">
+                        Next step: open Execution Trace, then enable artifact logging if needed.
+                    </p>
+                </div>
+            );
+        }
 
         switch (activeTab) {
             case 'plan':
-                const plan = artifacts.find(a => a.artifact_type === 'plan' || a.step_name === 'plan'); // simplified logic
+                const plan = artifacts.find(a => a.artifact_type === 'plan' || a.type === 'plan' || a.step_name === 'plan');
                 // If we don't have a plan artifact yet, we might fallback to generic plan text
                 return (
                     <div className="p-4">
@@ -62,14 +136,17 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
                 return (
                     <div className="p-4">
                         <h3 className="text-lg font-medium mb-4">News Evidence</h3>
-                        <EvidenceList evidence={evidence} />
+                        <EvidenceList evidence={evidence as any} />
                     </div>
                 );
             case 'constraints':
                 // Find artifacts with constraints (e.g. decision record)
-                const decisionRec = artifacts.find(a => a.artifact_type === 'decision_record');
-                const constraints = decisionRec?.artifact_json?.constraints_triggered || [];
-                const blockers = decisionRec?.artifact_json?.blockers || [];
+                const decisionRec = findByType(artifacts, 'decision_record');
+                const decisionPayload = decisionRec?.artifact_json && typeof decisionRec.artifact_json === 'object'
+                    ? (decisionRec.artifact_json as Record<string, unknown>)
+                    : {};
+                const constraints = Array.isArray(decisionPayload.constraints_triggered) ? decisionPayload.constraints_triggered : [];
+                const blockers = Array.isArray(decisionPayload.blockers) ? decisionPayload.blockers : [];
 
                 return (
                     <div className="p-4 space-y-4">
@@ -77,11 +154,13 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
                         {blockers.length > 0 && (
                             <div className="bg-[var(--color-status-error-bg)] p-3 rounded border border-[var(--color-status-error)]/20">
                                 <h4 className="text-[var(--color-status-error)] font-semibold mb-2">Blockers</h4>
-                                {blockers.map((b: any, i: number) => (
+                                {blockers.map((b: unknown, i: number) => {
+                                    const blocker = b && typeof b === 'object' ? (b as Record<string, unknown>) : {};
+                                    return (
                                     <div key={i} className="text-sm text-[var(--color-status-error)]">
-                                        • {b.reason} ({b.tag})
+                                        • {String(blocker.reason ?? 'Unknown reason')} ({String(blocker.tag ?? 'unknown')})
                                     </div>
-                                ))}
+                                );})}
                             </div>
                         )}
                         {constraints.length === 0 && blockers.length === 0 && (
@@ -92,17 +171,19 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
                     </div>
                 );
             case 'decision':
-                const decision = artifacts.find(a => a.artifact_type === 'decision_record');
+                const decision = findByType(artifacts, 'decision_record');
                 if (!decision) return <div className="p-4">No decision record found.</div>;
-                const d = decision.artifact_json;
+                const d = decision.artifact_json && typeof decision.artifact_json === 'object'
+                    ? (decision.artifact_json as Record<string, unknown>)
+                    : {};
                 return (
                     <div className="p-4 space-y-4">
                         <h3 className="text-lg font-medium">Final Decision</h3>
                         <div className="p-3 theme-bg rounded border theme-border">
-                            <div className="text-sm font-semibold">Selected Asset: {d.selected_asset || 'NONE (Blocked)'}</div>
-                            <div className="text-sm mt-1">Action: {d.action}</div>
+                            <div className="text-sm font-semibold">Selected Asset: {String(d.selected_asset ?? 'NONE (Blocked)')}</div>
+                            <div className="text-sm mt-1">Action: {String(d.action ?? 'N/A')}</div>
                             <div className="text-sm mt-2 font-mono theme-elevated p-2 rounded">
-                                {d.rationale}
+                                {String(d.rationale ?? 'No rationale provided.')}
                             </div>
                         </div>
                     </div>
@@ -156,6 +237,7 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
                     <button
                         key={tab}
                         onClick={() => setActiveTab(tab as any)}
+                        disabled={(tab === 'evidence' && evidence.length === 0) || (tab !== 'evidence' && artifacts.length === 0)}
                         className={`px-4 py-2 text-xs font-medium border-b-2 whitespace-nowrap ${activeTab === tab
                                 ? 'border-neutral-800 dark:border-neutral-200 theme-text'
                                 : 'border-transparent theme-text-secondary hover:opacity-80'

@@ -12,8 +12,17 @@ logger = get_logger(__name__)
 
 
 class PaperProvider(BrokerProvider):
-    """Paper trading provider."""
-    
+    """Paper trading provider — mirrors Coinbase single-order constraint."""
+
+    def __init__(self):
+        from backend.providers.base import BrokerCapabilities
+        self.capabilities = BrokerCapabilities(
+            max_orders_per_submit=1,
+            supports_batch_submit=False,
+            sell_uses_base_size=True,
+            buy_uses_quote_size=True,
+        )
+
     def place_order(
         self,
         run_id: str,

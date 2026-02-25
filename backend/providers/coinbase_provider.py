@@ -22,14 +22,21 @@ class CoinbaseProvider(BrokerProvider):
     BASE_URL = "https://api.coinbase.com/api/v3/brokerage"
     
     def __init__(self, api_key_name: Optional[str] = None, api_private_key: Optional[str] = None):
+        from backend.providers.base import BrokerCapabilities
+        self.capabilities = BrokerCapabilities(
+            max_orders_per_submit=1,
+            supports_batch_submit=False,
+            sell_uses_base_size=True,
+            buy_uses_quote_size=True,
+        )
         settings = get_settings()
-        
+
         if not settings.enable_live_trading:
             raise ValueError("LIVE_TRADING is disabled. Set ENABLE_LIVE_TRADING=true to enable.")
-        
+
         self.api_key_name = api_key_name or settings.coinbase_api_key_name
         self.api_private_key = api_private_key or settings.coinbase_api_private_key
-        
+
         if not self.api_key_name or not self.api_private_key:
             raise ValueError("COINBASE_API_KEY_NAME and COINBASE_API_PRIVATE_KEY required for live trading (CDP JWT auth)")
     
@@ -340,8 +347,8 @@ class CoinbaseProvider(BrokerProvider):
                 )
                 product_data = {
                     "product_id": upper_product,
-                    "base_min_size": "0.01",
-                    "base_increment": "0.01",
+                    "base_min_size": "0.00000001",
+                    "base_increment": "0.00000001",
                     "quote_increment": "0.01",
                     "min_market_funds": "1.0",
                     "_fallback": True,  # Flag to indicate this is a fallback
@@ -563,14 +570,18 @@ class CoinbaseProvider(BrokerProvider):
                 base_size = notional_usd / current_price
                 logger.info(f"SELL: Converted ${notional_usd} to {base_size:.8f} {product_id.split('-')[0]} at price ${current_price:.2f}")
             
-            # Apply precision rounding from product details
+            # Apply precision rounding using Decimal to avoid float imprecision
             base_increment = product_details.get("base_increment", "0.00000001")
             try:
-                increment = float(base_increment)
-                if increment > 0:
-                    # Round down to increment
-                    base_size = (int(base_size / increment)) * increment
-            except (ValueError, TypeError):
+                from decimal import Decimal, ROUND_DOWN as _RD
+                _inc_d = Decimal(str(base_increment))
+                _bs_d = Decimal(str(base_size))
+                _eps_d = Decimal("1E-10")
+                if _inc_d > 0:
+                    base_size = float(
+                        ((_bs_d - _eps_d) / _inc_d).to_integral_value(rounding=_RD) * _inc_d
+                    )
+            except (ValueError, TypeError, ArithmeticError):
                 pass
             
             # Validate base_size > 0 after rounding
@@ -588,12 +599,25 @@ class CoinbaseProvider(BrokerProvider):
                 if base_min_size > 0 and base_size < base_min_size:
                     min_usd = base_min_size * (current_price or 0)
                     raise ValueError(
-                        f"SELL base_size {base_size:.8f} is below minimum {base_min_size:.8f} for {product_id}. "
-                        f"Minimum sell amount is approximately ${min_usd:.2f}."
+                        f"SELL base_size {base_size:.8f} is below minimum {base_min_size:.8f} for {product_id} "
+                        f"(≈ ${min_usd:.2f}). "
+                        f"Source field: product_details.base_min_size={base_min_size_str!r}."
                     )
             except (ValueError, TypeError) as e:
                 if "below minimum" in str(e) or "too small" in str(e):
                     raise
+
+            # Emit debug trace when DEBUG_MIN_RULES=1
+            if os.environ.get("DEBUG_MIN_RULES") == "1" and run_id:
+                self._emit_min_rules_trace_static(
+                    run_id=run_id,
+                    product_id=product_id,
+                    requested_base_size=base_size,
+                    requested_notional_usd=notional_usd,
+                    base_min_size_str=base_min_size_str,
+                    current_price=current_price,
+                    product_details=product_details,
+                )
 
             # Format with appropriate precision (8 decimal places for crypto)
             order_configuration = {
@@ -859,6 +883,102 @@ class CoinbaseProvider(BrokerProvider):
                 time.sleep(backoff_seconds * (2 ** (attempt - 1)))
         
         raise Exception(f"Order placement failed after {max_retries} attempts")
+
+    @staticmethod
+    def _emit_min_rules_trace_static(
+        run_id: str,
+        product_id: str,
+        requested_base_size: float,
+        requested_notional_usd: float,
+        base_min_size_str: str,
+        current_price: Optional[float],
+        product_details: Dict[str, Any],
+    ) -> None:
+        """Persist a single structured min_rules_trace artifact (behind DEBUG_MIN_RULES=1)."""
+        trace = {
+            "artifact_type": "min_rules_trace",
+            "product_id": product_id,
+            "requested_base_size": requested_base_size,
+            "requested_notional_usd": requested_notional_usd,
+            "current_price": current_price,
+            "preview_called": False,
+            "preview_min_rule": None,
+            "metadata_base_min_size": product_details.get("base_min_size"),
+            "metadata_base_increment": product_details.get("base_increment"),
+            "metadata_min_market_funds": product_details.get("min_market_funds"),
+            "metadata_quote_increment": product_details.get("quote_increment"),
+            "default_min_rule_used": base_min_size_str == "0" or not product_details.get("base_min_size"),
+            "final_enforced_min_base": base_min_size_str,
+            "final_enforced_min_notional_usd": float(base_min_size_str or 0) * (current_price or 0),
+            "reason": "metadata" if product_details.get("base_min_size") else "default",
+        }
+        try:
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """INSERT INTO run_artifacts (run_id, step_name, artifact_type, artifact_json, created_at)
+                       VALUES (?, 'execution', 'min_rules_trace', ?, ?)""",
+                    (run_id, json.dumps(trace), now_iso()),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    def preview_order(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Preview an order with Coinbase and return normalized validation result."""
+        path = "/api/v3/brokerage/orders/preview"
+        headers = self._get_headers("POST", path)
+        body = json.dumps(payload)
+
+        with httpx.Client(timeout=10.0) as http_client:
+            response = http_client.post(
+                f"https://api.coinbase.com{path}",
+                headers=headers,
+                content=body,
+            )
+
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+
+        # Coinbase can return business failures with 200 and success=false.
+        if response.status_code >= 400:
+            message = ""
+            if isinstance(data, dict):
+                er = data.get("error_response") if isinstance(data.get("error_response"), dict) else {}
+                message = (
+                    er.get("error_details")
+                    or er.get("message")
+                    or er.get("error")
+                    or data.get("message")
+                    or data.get("error")
+                    or ""
+                )
+            if not message:
+                message = f"HTTP {response.status_code} from preview endpoint"
+            return {"success": False, "error_message": message, "raw": data}
+
+        if not isinstance(data, dict):
+            return {"success": False, "error_message": "Invalid preview response", "raw": data}
+
+        if data.get("success") is False:
+            er = data.get("error_response") if isinstance(data.get("error_response"), dict) else {}
+            message = (
+                er.get("error_details")
+                or er.get("message")
+                or er.get("error")
+                or data.get("message")
+                or data.get("error")
+                or "Order rejected by Coinbase preview."
+            )
+            return {"success": False, "error_message": message, "raw": data}
+
+        if data.get("success") is True or data.get("preview_id"):
+            return {"success": True, "raw": data}
+
+        # Unrecognized response shape => caller can fallback to metadata checks.
+        return {"success": None, "raw": data}
     
     def get_positions(self, tenant_id: str, run_id: str = None, node_id: str = None) -> Dict[str, Any]:
         """Get current positions from Coinbase."""

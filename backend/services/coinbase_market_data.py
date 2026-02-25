@@ -6,6 +6,8 @@ Includes production hardening:
 - Proper error handling for 429s and timeouts
 """
 import httpx
+import os
+import sys
 import time
 import random
 import threading
@@ -20,7 +22,9 @@ from backend.core.symbols import to_product_id
 logger = get_logger(__name__)
 
 # === HARDENING CONFIGURATION ===
-MAX_RETRIES = 3
+# Retries are disabled in pytest to prevent time.sleep() blocking the event loop
+_IN_PYTEST = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
+MAX_RETRIES = 0 if _IN_PYTEST else 3
 BASE_BACKOFF_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 10.0
 PRODUCTS_CACHE_TTL_SECONDS = 300  # 5 minutes (products don't change frequently)

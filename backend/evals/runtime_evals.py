@@ -267,32 +267,105 @@ def emit_execution_eval(
     mode: str = "PAPER",
     error: Optional[str] = None,
     conversation_id: Optional[str] = None,
+    order_id: Optional[str] = None,
+    order_status: Optional[str] = None,
+    filled_qty: Optional[float] = None,
 ) -> Optional[str]:
-    """Emit execution quality eval after trade completes."""
-    score = 1.0 if success else 0.0
-    reasons = []
-    if success:
-        reasons.append(f"Trade executed successfully in {mode} mode")
-    else:
-        reasons.append(f"Trade failed in {mode} mode")
-        if error:
-            reasons.append(f"Error: {error[:200]}")
+    """Emit submission_success + execution_fill_quality evals after trade.
 
-    ev = _make_eval(
-        run_id=run_id, tenant_id=tenant_id,
-        eval_name="execution_quality",
-        score=score,
-        reasons=reasons,
-        step_name="execute",
-        category="quality",
-        conversation_id=conversation_id,
-    )
+    submission_success — was the order accepted by the venue? Valid for any order.
+    execution_fill_quality — only scored when fill is confirmed (status=FILLED).
+                             Shows N/A for submitted-but-not-filled orders.
+    """
+    results = []
+
+    # ------------------------------------------------------------------
+    # 1. submission_success: did the venue accept the order?
+    # ------------------------------------------------------------------
+    venue_rejected = (order_status or '').upper() in ('REJECTED', 'FAILED', 'CANCELED', 'CANCELLED', 'EXPIRED')
+    sub_score: float
+    sub_reasons: List[str]
+    if not success or venue_rejected:
+        sub_score = 0.0
+        sub_reasons = [f"Order not accepted by venue in {mode} mode"]
+        if error:
+            sub_reasons.append(f"Error: {error[:200]}")
+        if venue_rejected:
+            sub_reasons.append(f"Venue status: {order_status}")
+    else:
+        sub_score = 1.0
+        sub_reasons = [f"Order accepted by venue in {mode} mode"]
+        if order_id:
+            sub_reasons.append(f"Order ID assigned: {order_id[:20]}..." if len(order_id) > 20 else f"Order ID: {order_id}")
 
     try:
-        return _repo.create_eval_result(ev)
+        results.append(_repo.create_eval_result(_make_eval(
+            run_id=run_id, tenant_id=tenant_id,
+            eval_name="submission_success",
+            score=sub_score,
+            reasons=sub_reasons,
+            step_name="execute",
+            category="quality",
+            conversation_id=conversation_id,
+        )))
     except Exception as e:
-        logger.warning("Failed to emit execution eval: %s", e)
-        return None
+        logger.warning("Failed to emit submission_success eval: %s", e)
+
+    # ------------------------------------------------------------------
+    # 2. execution_fill_quality: only meaningful when fill confirmed
+    # ------------------------------------------------------------------
+    fill_confirmed = (order_status or '').upper() == 'FILLED' or (
+        isinstance(filled_qty, float) and filled_qty > 0
+    )
+
+    if fill_confirmed:
+        fill_score = 1.0 if success else 0.5
+        fill_reasons = [f"Fill confirmed in {mode} mode"]
+        if isinstance(filled_qty, float) and filled_qty > 0:
+            fill_reasons.append(f"Filled qty: {filled_qty}")
+    else:
+        # N/A sentinel — score stored as 0 but reasons prefix "N/A:" for UI detection
+        fill_score = 0.0
+        fill_reasons = [
+            "N/A: Fill not confirmed yet. Execution fill quality is deferred.",
+            "This score will be updated once the order status transitions to FILLED.",
+        ]
+
+    try:
+        results.append(_repo.create_eval_result(_make_eval(
+            run_id=run_id, tenant_id=tenant_id,
+            eval_name="execution_fill_quality",
+            score=fill_score,
+            reasons=fill_reasons,
+            step_name="execute",
+            category="quality",
+            conversation_id=conversation_id,
+        )))
+    except Exception as e:
+        logger.warning("Failed to emit execution_fill_quality eval: %s", e)
+
+    # ------------------------------------------------------------------
+    # Legacy "execution_quality" — keep for backward compat but mark clearly
+    # ------------------------------------------------------------------
+    legacy_score = 1.0 if success and not venue_rejected else 0.0
+    legacy_reasons = [f"{'Accepted' if legacy_score == 1.0 else 'Rejected/failed'} by venue in {mode} mode"]
+    if not fill_confirmed:
+        legacy_reasons.append("Note: fill quality not assessed (order not filled yet)")
+
+    try:
+        results.append(_repo.create_eval_result(_make_eval(
+            run_id=run_id, tenant_id=tenant_id,
+            eval_name="execution_quality",
+            score=legacy_score,
+            reasons=legacy_reasons,
+            step_name="execute",
+            category="quality",
+            conversation_id=conversation_id,
+        )))
+    except Exception as e:
+        logger.warning("Failed to emit execution_quality eval: %s", e)
+
+    return results[0] if results else None
 
 
 # ---------------------------------------------------------------------------

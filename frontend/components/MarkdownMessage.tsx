@@ -162,18 +162,41 @@ export default function MarkdownMessage({ content, className = '' }: MarkdownMes
       <hr className="my-4 theme-border" {...props} />
     ),
 
-    // Links: enterprise contrast, hover underline (works in light and dark)
-    a: ({ children, href, ...props }) => (
-      <a
-        href={href}
-        className="text-[#4a7bc8] hover:text-[#6b9ae8] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)] focus:ring-offset-1 rounded px-0.5 dark:text-[#7ba3f5] dark:hover:text-[#9bb8f8]"
-        target="_blank"
-        rel="noopener noreferrer"
-        {...props}
-      >
-        {children}
-      </a>
-    ),
+    // Links: normalize evidence schemes (url:, run:, artifact:) to navigable hrefs
+    a: ({ children, href, ...props }) => {
+      let resolvedHref = href ?? '#';
+      let target: string | undefined = '_blank';
+      let rel: string | undefined = 'noopener noreferrer';
+
+      if (resolvedHref.startsWith('url:')) {
+        resolvedHref = resolvedHref.slice(4);
+        target = undefined;
+        rel = undefined;
+      } else if (resolvedHref.startsWith('run:')) {
+        const runPath = resolvedHref.slice(4);
+        const [runId, artifactKey] = runPath.split('#');
+        resolvedHref = `/runs/${runId}${artifactKey ? `#${artifactKey}` : ''}`;
+        target = undefined;
+        rel = undefined;
+      } else if (resolvedHref.startsWith('artifact:')) {
+        const artifactId = resolvedHref.slice(9);
+        resolvedHref = `/runs?artifact=${encodeURIComponent(artifactId)}`;
+        target = undefined;
+        rel = undefined;
+      }
+
+      return (
+        <a
+          href={resolvedHref}
+          className="text-[#4a7bc8] hover:text-[#6b9ae8] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)] focus:ring-offset-1 rounded px-0.5 dark:text-[#7ba3f5] dark:hover:text-[#9bb8f8]"
+          target={target}
+          rel={rel}
+          {...props}
+        >
+          {children}
+        </a>
+      );
+    },
 
     // Blockquote
     blockquote: ({ children, ...props }) => (

@@ -2,7 +2,9 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useParams } from 'next/navigation';
-import { getRunDetail, getRunStatus, getPortfolioValueOverTime, approve, deny, listApprovals, getTrace } from '@/lib/api';
+import { getRunDetail, getRunStatus, getPortfolioValueOverTime, approve, deny, getTrace, fetchEvalRunDetail, type EvalDetail } from '@/lib/api';
+import RunCharts from '@/components/RunCharts';
+import RunCopilot from '@/components/RunCopilot';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const fmtNum = (v: any, digits = 2) => (typeof v === 'number' && isFinite(v) ? v.toFixed(digits) : '\u2014');
@@ -13,6 +15,22 @@ function safeStr(v: unknown): string {
   if (typeof v === 'number' && isFinite(v)) return String(v);
   if (v != null && typeof v === 'object') return JSON.stringify(v);
   return '';
+}
+
+function evalOneLineWhat(ev: EvalDetail): string {
+  return ev.definition?.description || 'Measures run quality for this criterion.';
+}
+
+function evalOneLineThreshold(ev: EvalDetail): string {
+  if (typeof ev.definition?.threshold === 'number' && isFinite(ev.definition.threshold)) {
+    return `Default threshold: ${(ev.definition.threshold * 100).toFixed(0)}%`;
+  }
+  return 'Default threshold: N/A';
+}
+
+function evalOneLineWhy(ev: EvalDetail): string {
+  if (Array.isArray(ev.reasons) && ev.reasons.length > 0) return safeStr(ev.reasons[0]);
+  return 'Helps validate decision quality and production safety.';
 }
 
 export default function RunDetailPage() {
@@ -30,17 +48,19 @@ export default function RunDetailPage() {
   const [loading, setLoading] = useState(true);
   const [runStatus, setRunStatus] = useState<string>('');
   const [showDebugIds, setShowDebugIds] = useState(false);
-  const [runEvals, setRunEvals] = useState<any[]>([]);
+  const [runEvals, setRunEvals] = useState<EvalDetail[]>([]);
+  const [evalsLoading, setEvalsLoading] = useState(false);
+  const [expandedEvalKey, setExpandedEvalKey] = useState<string | null>(null);
+  const [evalSearch, setEvalSearch] = useState('');
   const eventSourceRef = useRef<EventSource | null>(null);
   const terminalRef = useRef(false);
 
   // Full data load - only on initial mount and when status transitions to terminal
   async function loadDataFull() {
     try {
-      const [runDetail, portfolio, pendingApprovals, traceData, pnl, slippage] = await Promise.all([
+      const [runDetail, portfolio, traceData, pnl, slippage] = await Promise.all([
         getRunDetail(runId),
         getPortfolioValueOverTime(runId).catch(() => []),
-        listApprovals().catch(() => []),
         getTrace(runId).catch(() => null),
         fetch(`/api/v1/analytics/pnl?run_id=${runId}`, {
           headers: { 'X-Dev-Tenant': 't_default' },
@@ -53,6 +73,8 @@ export default function RunDetailPage() {
       const status = runDetail?.run?.status || '';
       setRunStatus(status);
       setPortfolioData(portfolio);
+      // Use approvals from run detail response — no separate /approvals endpoint needed
+      const pendingApprovals = runDetail.approvals || [];
       setApprovals(pendingApprovals.filter((a: any) => a.run_id === runId));
       setTrace(traceData);
       setPnlData(pnl);
@@ -148,7 +170,7 @@ export default function RunDetailPage() {
   const steps = trace?.steps || [];
 
   return (
-    <div className="p-8 max-w-7xl mx-auto">
+    <div className="p-8 pb-10 max-w-7xl mx-auto min-h-0">
       <div className="flex items-center justify-between mb-2">
         <h1 className="text-3xl font-bold theme-text">Run Details</h1>
         <button
@@ -159,7 +181,14 @@ export default function RunDetailPage() {
         </button>
       </div>
       <div className="flex flex-wrap gap-4 text-sm theme-text-secondary mb-4">
-        <span>Status: <span className={`font-medium ${detail.run.status === 'COMPLETED' ? 'text-[var(--color-status-success)]' : detail.run.status === 'FAILED' ? 'text-[var(--color-status-error)]' : 'theme-text'}`}>{detail.run.status}</span></span>
+        <span>Status: <span className={`font-medium ${detail.run.status === 'COMPLETED' ? 'text-[var(--color-status-success)]' : detail.run.status === 'FAILED' ? 'text-[var(--color-status-error)]' : 'theme-text'}`}>{detail.run.status}</span>
+          {detail.run.status === 'COMPLETED' &&
+           detail.orders?.some((o: any) =>
+             !['FILLED','FAILED','REJECTED','CANCELED','EXPIRED','TIMEOUT'].includes((o.status||'').toUpperCase())
+           ) && (
+            <span className="text-xs text-[var(--color-status-warning)] ml-1">(fill pending)</span>
+          )}
+        </span>
         <span>Mode: <span className="font-medium">{detail.run.execution_mode}</span></span>
         {showDebugIds && (
           <>
@@ -199,47 +228,70 @@ export default function RunDetailPage() {
         </div>
       )}
 
+      {/* Run Copilot Panel */}
+      <RunCopilot
+        runId={runId}
+        run={detail.run}
+        orders={detail.orders || []}
+        evals={runEvals}
+        traceArtifacts={trace?.artifacts}
+      />
+
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b theme-border">
         <button
+          data-testid="run-tab-timeline"
           onClick={() => setActiveTab('timeline')}
           className={`px-4 py-2 ${activeTab === 'timeline' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
         >
           Execution Trace
         </button>
         <button
+          data-testid="run-tab-evidence"
           onClick={() => setActiveTab('evidence')}
           className={`px-4 py-2 ${activeTab === 'evidence' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
         >
           Evidence
         </button>
         <button
+          data-testid="run-tab-orders"
           onClick={() => setActiveTab('orders')}
           className={`px-4 py-2 ${activeTab === 'orders' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
         >
           Orders & Fills
         </button>
         <button
+          data-testid="run-tab-pnl"
           onClick={() => setActiveTab('pnl')}
           className={`px-4 py-2 ${activeTab === 'pnl' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
         >
           PnL & Slippage
         </button>
         <button
+          data-testid="run-tab-charts"
           onClick={() => setActiveTab('charts')}
           className={`px-4 py-2 ${activeTab === 'charts' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
         >
           Charts
         </button>
         <button
+          data-testid="run-tab-evals"
           onClick={() => {
             setActiveTab('evals');
             // Load evals on first click
             if (runEvals.length === 0) {
-              fetch(`/api/v1/evals/run/${runId}`, { headers: { 'X-Dev-Tenant': 't_default' } })
-                .then(r => r.json())
-                .then(data => setRunEvals(data.evals || []))
-                .catch(() => {});
+              setEvalsLoading(true);
+              fetchEvalRunDetail(runId)
+                .then((data) => {
+                  const all: EvalDetail[] = [];
+                  const cats = (data ?? {}).categories ?? {};
+                  for (const category of Object.values(cats)) {
+                    if (Array.isArray(category.evals)) all.push(...category.evals);
+                  }
+                  setRunEvals(all);
+                })
+                .catch(() => setRunEvals([]))
+                .finally(() => setEvalsLoading(false));
             }
           }}
           className={`px-4 py-2 ${activeTab === 'evals' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
@@ -300,17 +352,38 @@ export default function RunDetailPage() {
 
           <div>
             <h2 className="text-xl font-semibold mb-4 theme-text">Plan Summary</h2>
-            {trace?.plan ? (
-              <div className="p-4 theme-bg rounded theme-text">
-                <p><strong>Strategy:</strong> {trace.plan.strategy_spec?.strategy_name || 'N/A'}</p>
-                <p><strong>Metric:</strong> {trace.plan.strategy_spec?.metric || 'N/A'}</p>
-                <p><strong>Window:</strong> {trace.plan.strategy_spec?.window || 'N/A'}</p>
-                {trace.plan.selected_asset && (
-                  <p><strong>Selected Asset:</strong> {trace.plan.selected_asset}</p>
+            {(trace?.plan || trace?.trade_plan) ? (
+              <div className="p-4 theme-bg rounded theme-text space-y-1">
+                <p><strong>Strategy:</strong>{' '}
+                  {trace?.plan?.strategy_spec?.strategy_name || trace?.trade_plan?.strategy || 'user_direct'}
+                </p>
+                <p><strong>Metric:</strong>{' '}
+                  {trace?.plan?.strategy_spec?.metric || trace?.trade_plan?.metric || 'trade_plan metric not set'}
+                </p>
+                <p><strong>Window:</strong>{' '}
+                  {trace?.plan?.strategy_spec?.window || trace?.trade_plan?.window?.label || 'spot'}
+                </p>
+                {(trace?.plan?.selected_asset || trace?.trade_plan?.selected_asset) && (
+                  <p><strong>Selected Asset:</strong>{' '}
+                    {trace?.plan?.selected_asset || trace?.trade_plan?.selected_asset}
+                  </p>
+                )}
+                {trace?.trade_plan?.rationale && (
+                  <p className="text-sm theme-text-secondary mt-2">{trace.trade_plan.rationale}</p>
                 )}
               </div>
             ) : (
-              <p className="theme-text-secondary">No plan available</p>
+              <div className="p-4 theme-bg rounded theme-text-secondary text-sm space-y-1">
+                {trace?.trade_plan?.unavailable_reason ? (
+                  <p>Plan unavailable: {trace.trade_plan.unavailable_reason === 'analyze_only'
+                    ? 'This was an ANALYZE-only run (no trade planned).'
+                    : trace.trade_plan.unavailable_reason === 'run_failed_before_proposal'
+                    ? `Run failed before proposal stage${trace.trade_plan.stage_failed ? ` (failed at: ${trace.trade_plan.stage_failed})` : ''}.`
+                    : trace.trade_plan.unavailable_reason}</p>
+                ) : (
+                  <p>Plan Summary: trade_plan artifact was not emitted. The run may not have reached proposal stage, or it was an ANALYZE-only run.</p>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -319,10 +392,19 @@ export default function RunDetailPage() {
       {/* Evidence Tab */}
       {activeTab === 'evidence' && (
         <div className="space-y-6">
+          <div className="text-xs theme-text-secondary">
+            Lookback: {safeStr(trace?.artifacts?.rankings_meta?.lookback_window || trace?.plan?.strategy_spec?.window || 'N/A')}; Universe: {(trace?.artifacts?.rankings_meta?.universe_count ?? rankings.length) || 0} symbols; Candles batches: {candlesBatches.length || 0}
+          </div>
+          {rankings.length === 0 && candlesBatches.length === 0 && toolCalls.length === 0 && (
+            <div className="p-4 theme-surface border theme-border rounded text-sm theme-text-secondary">
+              No rankings or candle evidence is available for this run yet. This usually means the research node did not emit artifacts. Next step: open Execution Trace and verify research node outputs.
+            </div>
+          )}
           {/* Rankings */}
           {rankings.length > 0 && (
             <div className="p-4 theme-surface border theme-border rounded">
               <h2 className="text-xl font-semibold mb-4 theme-text">Asset Rankings</h2>
+              <div className="overflow-x-auto">
               <table className="w-full border-collapse border theme-border">
                 <thead>
                   <tr className="theme-elevated">
@@ -338,15 +420,20 @@ export default function RunDetailPage() {
                     <tr key={idx} className={idx === 0 ? 'bg-[var(--color-status-success-bg)]' : ''}>
                       <td className="border theme-border p-2 theme-text">{rank.symbol}</td>
                       <td className="border theme-border p-2 theme-text">{fmtNum(rank.score, 4)}</td>
-                      <td className="border theme-border p-2 theme-text">${fmtNum(rank.first_price)}</td>
-                      <td className="border theme-border p-2 theme-text">${fmtNum(rank.last_price)}</td>
-                      <td className="border theme-border p-2 theme-text">{typeof rank.first_price === 'number' && typeof rank.last_price === 'number' && rank.first_price !== 0
+                      <td className="border theme-border p-2 theme-text">
+                        {typeof rank.first_price === 'number' ? `$${fmtNum(rank.first_price)}` : <span title={safeStr(rank.first_price_reason || 'First price unavailable from candle history')}>Unavailable</span>}
+                      </td>
+                      <td className="border theme-border p-2 theme-text">
+                        {typeof rank.last_price === 'number' ? `$${fmtNum(rank.last_price)}` : <span title={safeStr(rank.last_price_reason || 'Last price unavailable from candle history')}>Unavailable</span>}
+                      </td>
+                      <td className="border theme-border p-2 theme-text" title={safeStr(rank.return_reason || '')}>{typeof rank.first_price === 'number' && typeof rank.last_price === 'number' && rank.first_price !== 0
                         ? ((rank.last_price - rank.first_price) / rank.first_price * 100).toFixed(2) + '%'
-                        : '\u2014'}</td>
+                        : 'Unavailable'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
 
@@ -462,7 +549,19 @@ export default function RunDetailPage() {
                     <td className="border theme-border p-2">{order.symbol}</td>
                     <td className="border theme-border p-2">{order.side}</td>
                     <td className="border theme-border p-2">${fmtNum(order.notional_usd)}</td>
-                    <td className="border theme-border p-2">{order.status}</td>
+                    <td className="border theme-border p-2">
+                      {(() => {
+                        const s = (order.status || '').toUpperCase();
+                        if (s === 'FILLED') return <span className="text-[var(--color-status-success)] font-medium">Filled ✓</span>;
+                        if (s === 'FAILED') return <span className="text-[var(--color-status-error)] font-medium">Failed ✗</span>;
+                        if (s === 'REJECTED') return <span className="text-[var(--color-status-error)] font-medium">Rejected ✗</span>;
+                        if (s === 'CANCELED' || s === 'EXPIRED') return <span className="text-[var(--color-status-error)] font-medium">{order.status}</span>;
+                        if (s === 'SUBMITTED') return <span className="text-[var(--color-status-warning)] font-medium">Submitted (at venue)</span>;
+                        if (s === 'PENDING_FILL') return <span className="text-[var(--color-status-warning)] font-medium">Pending fill</span>;
+                        if (s === 'PARTIALLY_FILLED') return <span className="text-[var(--color-status-warning)] font-medium">Partially filled</span>;
+                        return <span className="theme-text-secondary">{order.status}</span>;
+                      })()}
+                    </td>
                     <td className="border theme-border p-2">${fmtNum(order.avg_fill_price)}</td>
                     <td className="border theme-border p-2">{fmtNum(order.filled_qty, 6)}</td>
                     <td className="border theme-border p-2">${fmtNum(order.total_fees, 4)}</td>
@@ -477,7 +576,9 @@ export default function RunDetailPage() {
           {detail.orders.length > 0 && fills.length === 0 && (
             <div className="p-4 theme-surface border theme-border rounded">
               <h2 className="text-xl font-semibold mb-4 theme-text">Fills</h2>
-              <p className="theme-text-muted text-sm italic">No fills recorded yet. Fills appear after orders are matched by the exchange.</p>
+              <p className="theme-text-muted text-sm italic">
+                Orders: {detail.orders.length} submitted. Fills appear after exchange matching (typically under ~5s in PAPER mode; variable in LIVE mode). This page refreshes run status every 5 seconds.
+              </p>
             </div>
           )}
           {fills.length > 0 && (
@@ -517,6 +618,11 @@ export default function RunDetailPage() {
       {/* PnL & Slippage Tab */}
       {activeTab === 'pnl' && (
         <div className="space-y-6">
+          {!pnlData && !slippageData && (
+            <div className="p-4 theme-surface border theme-border rounded text-sm theme-text-secondary">
+              PnL data is unavailable for this run. PnL is computed from fills and latest prices. Next step: verify at least one fill exists, then refresh.
+            </div>
+          )}
           {/* PnL Summary */}
           {pnlData && (
             <div className="p-4 theme-surface border theme-border rounded">
@@ -585,108 +691,158 @@ export default function RunDetailPage() {
 
       {/* Evals Tab */}
       {activeTab === 'evals' && (
-        <div className="space-y-6">
-          <div className="p-4 theme-elevated border theme-border rounded-xl">
-            <h2 className="text-xl font-semibold mb-4 theme-text">Evaluation Results</h2>
-            {runEvals.length === 0 ? (
-              <p className="theme-text-secondary">No evaluations found for this run. Evals are emitted during trade execution.</p>
-            ) : (
-              <div className="space-y-2">
-                {runEvals.map((ev: any, idx: number) => {
-                  const score = typeof ev.score === 'number' ? ev.score : 0;
-                  const pass = score >= 0.5;
-                  const pct = Math.max(0, Math.min(100, score * 100));
-                  const barColor = score >= 0.9 ? 'bg-neutral-400' : score >= 0.7 ? 'bg-neutral-500' : score >= 0.5 ? 'bg-neutral-600' : 'bg-neutral-700';
-                  return (
-                    <div key={idx} className="p-3 theme-surface border theme-border rounded-lg">
-                      <div className="flex items-center gap-3 mb-2">
-                        <span className={`w-2.5 h-2.5 rounded-full ${pass ? 'bg-[var(--color-status-success)]' : 'bg-[var(--color-status-error)]'}`} />
-                        <span className="text-sm font-medium theme-text">
-                          {safeStr(ev.eval_name).replace(/_/g, ' ') || '\u2014'}
-                        </span>
-                        {ev.category != null && safeStr(ev.category) && (
-                          <span className="text-xs px-2 py-0.5 theme-elevated theme-text-secondary rounded">
-                            {safeStr(ev.category)}
-                          </span>
-                        )}
-                        <span className="text-xs theme-text-secondary ml-auto font-mono">
-                          {score.toFixed(3)}
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-neutral-200 dark:bg-neutral-700 rounded-full">
-                        <div className={`h-1.5 rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
-                      </div>
-                      {ev.reasons && ev.reasons.length > 0 && (
-                        <ul className="mt-2 text-xs theme-text-secondary space-y-0.5 ml-5">
-                          {ev.reasons.slice(0, 3).map((r: unknown, ri: number) => (
-                            <li key={ri}>{safeStr(r)}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  );
-                })}
+        <div className="flex flex-col" style={{ height: 'calc(100vh - 260px)', minHeight: 480 }}>
+          <div className="flex flex-col h-full p-4 theme-elevated border theme-border rounded-xl overflow-hidden">
+            {/* Sticky header + search */}
+            <div className="flex-shrink-0 pb-3 border-b theme-border">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-xl font-semibold theme-text">Evaluation Results</h2>
+                {runEvals.length > 0 && (
+                  <span className="text-xs theme-text-secondary">
+                    {runEvals.filter((ev: any) => (typeof ev.score === 'number' ? ev.score : 0) >= 0.5).length}/{runEvals.length} passed
+                  </span>
+                )}
               </div>
-            )}
+              {runEvals.length > 3 && (
+                <input
+                  type="search"
+                  placeholder="Filter evals by name or category..."
+                  value={evalSearch}
+                  onChange={e => setEvalSearch(e.target.value)}
+                  className="mt-2 w-full px-3 py-1.5 text-sm theme-surface border theme-border rounded-lg theme-text placeholder:theme-text-secondary focus:outline-none focus:ring-1 focus:ring-[var(--color-accent,#6366f1)]"
+                />
+              )}
+            </div>
+
+            {/* Scrollable eval list */}
+            <div className="flex-1 min-h-0 overflow-y-auto pt-3 pr-1">
+              {evalsLoading ? (
+                <p className="theme-text-secondary text-sm">Loading eval explainability...</p>
+              ) : runEvals.length === 0 ? (
+                <p className="theme-text-secondary text-sm">No evaluations found for this run. Evals are emitted during trade execution.</p>
+              ) : (() => {
+                const searchLow = evalSearch.trim().toLowerCase();
+                const filtered = searchLow
+                  ? runEvals.filter((ev: any) =>
+                      (ev.eval_name || '').toLowerCase().includes(searchLow) ||
+                      (ev.category || '').toLowerCase().includes(searchLow) ||
+                      (ev.definition?.description || '').toLowerCase().includes(searchLow)
+                    )
+                  : runEvals;
+                if (filtered.length === 0) {
+                  return <p className="text-sm theme-text-secondary">No evals match &ldquo;{evalSearch}&rdquo;.</p>;
+                }
+                return (
+                  <div data-testid="run-evals-list" className="space-y-2">
+                    {filtered.map((ev: any, idx: number) => {
+                      const rawScore = ev.score;
+                      const isNA = rawScore == null || (typeof rawScore === 'number' && rawScore < 0) ||
+                        (Array.isArray(ev.reasons) && ev.reasons.some((r: unknown) => typeof r === 'string' && (r.startsWith('N/A:') || r.includes('deferred'))));
+                      const score = isNA ? 0 : (typeof rawScore === 'number' ? rawScore : 0);
+                      const pass = !isNA && score >= 0.5;
+                      const pct = isNA ? 0 : Math.max(0, Math.min(100, score * 100));
+                      const barColor = isNA ? 'bg-neutral-500' : score >= 0.9 ? 'bg-neutral-400' : score >= 0.7 ? 'bg-neutral-500' : score >= 0.5 ? 'bg-neutral-600' : 'bg-neutral-700';
+                      const key = `${safeStr(ev.eval_name)}-${idx}`;
+                      const isOpen = expandedEvalKey === key;
+                      return (
+                        <div key={idx} className="p-3 theme-surface border theme-border rounded-lg">
+                          <div className="flex items-center gap-3 mb-2">
+                            {isNA
+                              ? <span className="w-2.5 h-2.5 rounded-full bg-neutral-500" title="N/A — deferred" />
+                              : <span className={`w-2.5 h-2.5 rounded-full ${pass ? 'bg-[var(--color-status-success)]' : 'bg-[var(--color-status-error)]'}`} />
+                            }
+                            <span className="text-sm font-medium theme-text">
+                              {safeStr(ev.eval_name).replace(/_/g, ' ') || '\u2014'}
+                            </span>
+                            {ev.category != null && safeStr(ev.category) && (
+                              <span className="text-xs px-2 py-0.5 theme-elevated theme-text-secondary rounded">
+                                {safeStr(ev.category)}
+                              </span>
+                            )}
+                            <span className="text-xs theme-text-secondary ml-auto font-mono">
+                              {isNA ? 'N/A' : score.toFixed(3)}
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-neutral-200 dark:bg-neutral-700 rounded-full">
+                            {isNA
+                              ? <div className="h-1.5 rounded-full bg-neutral-500 opacity-40" style={{ width: '100%' }} />
+                              : <div className={`h-1.5 rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
+                            }
+                          </div>
+                          <div className="mt-2 text-xs space-y-1 theme-text-secondary">
+                            <p><strong>What this measures:</strong> {evalOneLineWhat(ev)}</p>
+                            <p><strong>{evalOneLineThreshold(ev)}</strong></p>
+                            <p><strong>Why it matters:</strong> {evalOneLineWhy(ev)}</p>
+                          </div>
+                          {ev.reasons && ev.reasons.length > 0 && (
+                            <ul className="mt-2 text-xs theme-text-secondary space-y-0.5 ml-5 list-disc">
+                              {ev.reasons.slice(0, 3).map((r: unknown, ri: number) => (
+                                <li key={ri}>{safeStr(r)}</li>
+                              ))}
+                            </ul>
+                          )}
+                          <button
+                            data-testid={`eval-view-details-${idx}`}
+                            onClick={() => setExpandedEvalKey(isOpen ? null : key)}
+                            className="mt-3 text-xs btn-secondary px-2 py-1 rounded"
+                          >
+                            {isOpen ? 'Hide details' : 'View details'}
+                          </button>
+                          {isOpen && (
+                            <div className="mt-3 p-3 theme-elevated rounded border theme-border text-xs space-y-2">
+                              <p><strong>Definition:</strong> {safeStr(ev.definition?.description || 'N/A')}</p>
+                              <p><strong>Formula:</strong> {safeStr(ev.definition?.rubric || 'N/A')}</p>
+                              <p><strong>Defaults:</strong> threshold={typeof ev.definition?.threshold === 'number' ? ev.definition.threshold : 'N/A'}, evaluator={safeStr(ev.evaluator_type || 'default')}</p>
+                              <p><strong>Inputs used:</strong> {ev.details && typeof ev.details === 'object' ? Object.keys(ev.details).join(', ') || 'N/A' : 'N/A'}</p>
+                              <p><strong>Data sources:</strong> {safeStr(ev.category || 'eval pipeline artifacts')}</p>
+                              <p><strong>Edge cases:</strong> Missing fields are treated as unavailable; evaluator records reasons/fallbacks.</p>
+                              <div>
+                                <p className="mb-1"><strong>Raw JSON payload</strong></p>
+                                <pre data-testid={`eval-raw-json-${idx}`} className="max-h-48 overflow-auto p-2 theme-sunken rounded border theme-border">{JSON.stringify(ev, null, 2)}</pre>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         </div>
       )}
 
       {/* Charts Tab */}
       {activeTab === 'charts' && (
-        <div className="space-y-6">
-          <div className="p-4 theme-surface border theme-border rounded">
-            <h2 className="text-xl font-semibold mb-4 theme-text">Portfolio Value Over Time</h2>
-            {portfolioData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={400}>
-                <LineChart data={portfolioData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="ts" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Line type="monotone" dataKey="total_value_usd" stroke="#737373" name="Total Value" />
-                  <Line type="monotone" dataKey="cash_usd" stroke="#a3a3a3" name="Cash" />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="theme-text-secondary">No portfolio data yet</p>
-            )}
-          </div>
+        <div className="space-y-4">
+          {/* Single professional chart: Portfolio Value & Trade Markers */}
+          <RunCharts runId={runId} />
 
-          {rankings.length > 0 && (
-            <div className="p-4 theme-surface border theme-border rounded">
-              <h2 className="text-xl font-semibold mb-4 theme-text">Asset Returns Comparison</h2>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={rankings.slice(0, 5)}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="symbol" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="score" fill="#737373" name="Return Score" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <h2 className="text-xl font-semibold mb-2">Nodes</h2>
-              <ul className="list-disc pl-5">
+          {/* Compact node / order summary */}
+          <div className="grid grid-cols-2 gap-4 pt-2">
+            <div className="p-3 theme-surface border theme-border rounded">
+              <h3 className="text-sm font-semibold theme-text mb-2">DAG Nodes</h3>
+              <ul className="space-y-1">
                 {detail.nodes.map((node: any) => (
-                  <li key={node.node_id}>
-                    {node.name}: {node.status}
+                  <li key={node.node_id} className="text-xs flex justify-between theme-text-secondary">
+                    <span>{node.name}</span>
+                    <span className={node.status === 'COMPLETED' ? 'text-[var(--color-status-success)]' : node.status === 'FAILED' ? 'text-[var(--color-status-error)]' : 'theme-text-secondary'}>
+                      {node.status}
+                    </span>
                   </li>
                 ))}
               </ul>
             </div>
-            <div>
-              <h2 className="text-xl font-semibold mb-2">Orders</h2>
-              <ul className="list-disc pl-5">
+            <div className="p-3 theme-surface border theme-border rounded">
+              <h3 className="text-sm font-semibold theme-text mb-2">Orders</h3>
+              <ul className="space-y-1">
                 {detail.orders.map((order: any) => (
-                  <li key={order.order_id}>
-                    {order.symbol} {order.side} ${fmtNum(order.notional_usd)} - {order.status}
+                  <li key={order.order_id} className="text-xs flex justify-between theme-text-secondary">
+                    <span>{order.symbol} {order.side} ${fmtNum(order.notional_usd)}</span>
+                    <span className={order.status === 'FILLED' ? 'text-[var(--color-status-success)]' : order.status === 'FAILED' || order.status === 'REJECTED' ? 'text-[var(--color-status-error)]' : 'text-[var(--color-status-warning)]'}>
+                      {order.status}
+                    </span>
                   </li>
                 ))}
               </ul>

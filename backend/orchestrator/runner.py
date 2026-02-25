@@ -384,15 +384,21 @@ async def _execute_run_body(run_id: str, span):
         with get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT execution_plan_json FROM runs WHERE run_id = ?",
+                "SELECT execution_plan_json, parsed_intent_json FROM runs WHERE run_id = ?",
                 (run_id,)
             )
             row = cursor.fetchone()
             existing_plan = None
+            parsed_intent_for_plan = {}
             if row and row["execution_plan_json"]:
                 try:
                     existing_plan = json.loads(row["execution_plan_json"])
-                except:
+                except Exception:
+                    pass
+            if row and row["parsed_intent_json"]:
+                try:
+                    parsed_intent_for_plan = json.loads(row["parsed_intent_json"])
+                except Exception:
                     pass
         
         # Create new plan structure
@@ -421,9 +427,25 @@ async def _execute_run_body(run_id: str, span):
                 new_plan["decision_trace"] = []
         else:
             new_plan["decision_trace"] = []
-        
+
+        # Derive strategy_spec from parsed intent for Plan Summary display
+        _action = str((parsed_intent_for_plan or {}).get("action", "")).upper()
+        if _action in ("BUY", "SELL"):
+            _strategy_name, _metric, _window = "user_direct", "n/a", "spot"
+        elif _action == "PORTFOLIO_ANALYSIS":
+            _strategy_name, _metric, _window = "portfolio_analysis", "n/a", "n/a"
+        elif _action:
+            _strategy_name, _metric, _window = _action.lower(), "n/a", "n/a"
+        else:
+            _strategy_name, _metric, _window = "unknown", "n/a", "n/a"
+        new_plan["strategy_spec"] = {
+            "strategy_name": _strategy_name,
+            "metric": _metric,
+            "window": _window,
+        }
+
         execution_plan = new_plan
-        
+
         # Store plan in run
         with get_conn() as conn:
             cursor = conn.cursor()
@@ -432,6 +454,41 @@ async def _execute_run_body(run_id: str, span):
                 (json.dumps(execution_plan), run_id)
             )
             conn.commit()
+
+        # Emit trade_plan artifact for ALL runs (deterministic -- never leave Plan Summary blank)
+        try:
+            _selected_asset = (
+                new_plan.get("selected_asset")
+                or (parsed_intent_for_plan or {}).get("asset")
+            )
+            if _action in ("BUY", "SELL"):
+                _persist_artifact(run_id, "plan", "trade_plan", {
+                    "strategy": _strategy_name,
+                    "metric": _metric,
+                    "window": {"label": _window, "hours": None},
+                    "selected_asset": _selected_asset,
+                    "rationale": (parsed_intent_for_plan or {}).get(
+                        "reasoning", "User-directed trade"
+                    ),
+                    "constraints": {
+                        "mode": execution_mode,
+                        "slippage_guard_bps": None,
+                        "time_in_force": "GTC",
+                    },
+                    "computed_at": now_iso(),
+                })
+            else:
+                _persist_artifact(run_id, "plan", "trade_plan", {
+                    "action": _action or "ANALYZE",
+                    "unavailable_reason": "analyze_only",
+                    "stage": "plan",
+                    "strategy": _strategy_name,
+                    "metric": _metric,
+                    "selected_asset": _selected_asset,
+                    "computed_at": now_iso(),
+                })
+        except Exception:
+            pass
         
         # Emit PLAN_CREATED event
         await _emit_event(run_id, "PLAN_CREATED", {
@@ -442,6 +499,33 @@ async def _execute_run_body(run_id: str, span):
         await _emit_event(run_id, "RUN_CREATED", {"run_id": run_id}, tenant_id=tenant_id)
         await _emit_event(run_id, "RUN_STARTED", {"run_id": run_id, "started_at": now_iso()}, tenant_id=tenant_id)
         await _emit_event(run_id, "RUN_STATUS", {"status": RunStatus.RUNNING.value}, tenant_id=tenant_id)
+        
+        # INV-6: Emit run_diagnostics artifact for every trade run.
+        try:
+            from backend.services.run_diagnostics import build_run_diagnostics
+            _referenced = []
+            try:
+                with get_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT parsed_intent_json FROM runs WHERE run_id = ?", (run_id,))
+                    _r = cur.fetchone()
+                    if _r and _r["parsed_intent_json"]:
+                        _pi = json.loads(_r["parsed_intent_json"])
+                        _universe = _pi.get("universe") or []
+                        _referenced = [s.replace("-USD", "") for s in _universe] if _universe else []
+                        if not _referenced and _pi.get("asset"):
+                            _referenced = [str(_pi["asset"]).upper()]
+            except Exception:
+                pass
+            diag = build_run_diagnostics(
+                run_id=run_id,
+                tenant_id=tenant_id,
+                execution_mode=execution_mode,
+                referenced_assets=_referenced,
+            )
+            _persist_artifact(run_id, "diagnostics", "run_diagnostics", diag)
+        except Exception as diag_err:
+            logger.warning("run_diagnostics artifact failed (non-fatal): %s", str(diag_err)[:200])
         
         node_sequence = 0
         for node_name, description, node_func in nodes:
@@ -721,7 +805,18 @@ async def _execute_run_body(run_id: str, span):
 
                 # Create trade_receipt for failed run with structured error code
                 _create_trade_receipt(run_id, "FAILED", error=error_dict, error_code=error_code)
-                
+
+                # Emit trade_plan on early failure so Plan Summary never shows bare "N/A"
+                try:
+                    _persist_artifact(run_id, "plan", "trade_plan", {
+                        "unavailable_reason": "run_failed_before_proposal",
+                        "stage_failed": node_name if 'node_name' in dir() else "unknown",
+                        "error_summary": str(e)[:200],
+                        "computed_at": now_iso(),
+                    })
+                except Exception:
+                    pass
+
                 await _emit_event(run_id, "RUN_STATUS", {
                     "status": RunStatus.FAILED.value,
                     "error": str(e),
@@ -757,8 +852,24 @@ async def _execute_run_body(run_id: str, span):
                 if row:
                     conv_id = row["conversation_id"]
 
-            # Emit execution success eval
-            emit_execution_eval(run_id, tenant_id, success=True, mode=execution_mode, conversation_id=conv_id)
+            # Emit execution success eval — include order status for fill-quality gating
+            _oid, _ostatus, _fqty = None, None, None
+            with get_conn() as _ec:
+                _ecur = _ec.cursor()
+                _ecur.execute(
+                    "SELECT order_id, status, filled_qty FROM orders WHERE run_id=? ORDER BY created_at DESC LIMIT 1",
+                    (run_id,),
+                )
+                _orow = _ecur.fetchone()
+                if _orow:
+                    _oid = _orow["order_id"]
+                    _ostatus = _orow["status"]
+                    _fqty = _orow["filled_qty"]
+            emit_execution_eval(
+                run_id, tenant_id, success=True, mode=execution_mode,
+                conversation_id=conv_id,
+                order_id=_oid, order_status=_ostatus, filled_qty=_fqty,
+            )
 
             # Emit insight evals if insight exists
             with get_conn() as conn:

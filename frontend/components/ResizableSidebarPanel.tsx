@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { NavSection } from './AppShell';
 import ConversationList from './ConversationList';
 import RunsList from './RunsList';
@@ -32,7 +33,11 @@ export default function ResizableSidebarPanel({
 
             {/* Sidebar Content */}
             <div className="flex-1 overflow-y-auto">
-                {activeSection === 'chats' && <ConversationList />}
+                {activeSection === 'chats' && (
+                    <Suspense fallback={<div className="p-4 space-y-3">{[1,2,3].map(i => <div key={i} className="h-16 theme-elevated rounded-lg animate-pulse" />)}</div>}>
+                        <ConversationList />
+                    </Suspense>
+                )}
                 {activeSection === 'trades' && <RunsList />}
                 {activeSection === 'evals' && <EvalSidebarList />}
                 {activeSection === 'telemetry' && <TelemetryList />}

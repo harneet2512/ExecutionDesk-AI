@@ -30,6 +30,20 @@ class NodeStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class OrderStatus(str, Enum):
+    """Canonical order lifecycle states."""
+    SUBMITTED = "SUBMITTED"
+    PENDING_FILL = "PENDING_FILL"
+    OPEN = "OPEN"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    FAILED = "FAILED"
+    REJECTED = "REJECTED"
+    CANCELED = "CANCELED"
+    EXPIRED = "EXPIRED"
+    TIMEOUT = "TIMEOUT"
+
+
 # ---- Transition tables ----
 
 _RUN_TRANSITIONS: dict[RunStatus, list[RunStatus]] = {
@@ -57,6 +71,15 @@ TERMINAL_CONFIRMATION_STATUSES = frozenset({
     ConfirmationStatus.CANCELLED,
     ConfirmationStatus.EXPIRED,
 })
+TERMINAL_ORDER_STATUSES = frozenset({
+    OrderStatus.FILLED,
+    OrderStatus.FAILED,
+    OrderStatus.REJECTED,
+    OrderStatus.CANCELED,
+    OrderStatus.EXPIRED,
+    OrderStatus.TIMEOUT,
+})
+FILL_CONFIRMED_STATUSES = frozenset({OrderStatus.FILLED})
 
 
 def can_transition(current: RunStatus, next_status: RunStatus) -> bool:

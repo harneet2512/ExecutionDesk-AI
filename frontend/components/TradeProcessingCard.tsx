@@ -58,6 +58,7 @@ export default function TradeProcessingCard({
     const fmtUsd = (v: any) => typeof v === 'number' && isFinite(v) && v > 0 ? `$${v.toFixed(2)} ` : '';
     const [showDebug, setShowDebug] = useState(false);
     const [debugCopied, setDebugCopied] = useState(false);
+    const [latestOrderStatus, setLatestOrderStatus] = useState<string | null>(null);
 
     // P2B: When SSE is connected the chat page already receives events.
     // Use a slower fallback interval (5s) to avoid duplicate poll traffic.
@@ -99,6 +100,37 @@ export default function TradeProcessingCard({
     // Derived terminal state booleans (F8 fix: were previously undefined)
     const isCompleted = status.toUpperCase() === 'COMPLETED';
     const isFailed = status.toUpperCase() === 'FAILED';
+    const hasPendingOrder =
+        latestOrderStatus !== null &&
+        ['SUBMITTED', 'OPEN', 'PENDING', 'PENDING_FILL', 'PARTIALLY_FILLED'].includes(latestOrderStatus);
+
+    useEffect(() => {
+        if (!runId) return;
+        if (!isCompleted) return;
+        let mounted = true;
+
+        const fetchOrderStatus = async () => {
+            try {
+                const res = await fetch(`/api/v1/runs/${runId}`, {
+                    headers: { 'X-Dev-Tenant': 't_default' },
+                });
+                if (!res.ok || !mounted) return;
+                const data = await res.json();
+                const orders = Array.isArray(data?.orders) ? data.orders : [];
+                const latest = orders[0];
+                if (latest?.status && mounted) {
+                    setLatestOrderStatus(String(latest.status).toUpperCase());
+                }
+            } catch {
+                // Keep default UI state if order status lookup fails.
+            }
+        };
+
+        fetchOrderStatus();
+        return () => {
+            mounted = false;
+        };
+    }, [runId, isCompleted]);
 
     // Notify parent when terminal ONCE per run (F4 fix: prevents infinite rerender)
     // Notify parent when terminal ONCE per run (F4 fix: prevents infinite rerender)
@@ -179,19 +211,27 @@ export default function TradeProcessingCard({
     }, [runId, status, currentStep, startedAt, elapsedSeconds, totalSteps, completedSteps, lastEventAt, secondsSinceLastEvent, isStale, error, steps]);
 
     return (
-        <div className={`border rounded-lg p-4 space-y-3 ${isCompleted ? 'bg-[var(--color-status-success-bg)] border-[var(--color-status-success)]/20' :
+        <div className={`border rounded-lg p-4 space-y-3 ${isCompleted
+                ? (hasPendingOrder
+                    ? 'bg-[var(--color-status-warning-bg)] border-[var(--color-status-warning)]/20'
+                    : 'bg-[var(--color-status-success-bg)] border-[var(--color-status-success)]/20')
+                :
                 isFailed ? 'bg-[var(--color-status-error-bg)] border-[var(--color-status-error)]/20' :
                     'theme-bg theme-border'
             }`}>
             {/* Header */}
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isCompleted ? 'bg-[var(--color-status-success)]/20' :
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isCompleted
+                            ? (hasPendingOrder
+                                ? 'bg-[var(--color-status-warning)]/20'
+                                : 'bg-[var(--color-status-success)]/20')
+                            :
                             isFailed ? 'bg-[var(--color-status-error)]/20' :
                                 getSideColorClass(normalizedSide, 'bg')
                         }`}>
                         <span className="text-lg">
-                            {isCompleted ? '\u2713' : isFailed ? '\u2717' : normalizedSide === 'SELL' ? '\u2193' : normalizedSide === 'BUY' ? '\u2191' : '\u2022'}
+                            {isCompleted ? (hasPendingOrder ? '\u23F3' : '\u2713') : isFailed ? '\u2717' : normalizedSide === 'SELL' ? '\u2193' : normalizedSide === 'BUY' ? '\u2191' : '\u2022'}
                         </span>
                     </div>
                     <div>
@@ -270,11 +310,23 @@ export default function TradeProcessingCard({
 
             {/* Completion banner */}
             {isCompleted && (
-                <div className="bg-[var(--color-status-success-bg)] border border-[var(--color-status-success)]/20 rounded-lg p-3 flex items-center gap-2 text-sm text-[var(--color-status-success)]">
-                    <span className="text-[var(--color-status-success)] text-base">&#10003;</span>
+                <div className={`rounded-lg p-3 flex items-center gap-2 text-sm border ${
+                    hasPendingOrder
+                        ? 'bg-[var(--color-status-warning-bg)] border-[var(--color-status-warning)]/20 text-[var(--color-status-warning)]'
+                        : 'bg-[var(--color-status-success-bg)] border-[var(--color-status-success)]/20 text-[var(--color-status-success)]'
+                }`}>
+                    <span className={`text-base ${
+                        hasPendingOrder ? 'text-[var(--color-status-warning)]' : 'text-[var(--color-status-success)]'
+                    }`}>
+                        {hasPendingOrder ? '\u23F3' : '\u2713'}
+                    </span>
                     <span>
-                        {executionMode || mode} {tradeTitle} - Order submitted (pending fill confirmation).
-                        {elapsedSeconds > 0 && <span className="text-[var(--color-status-success)] text-xs ml-1">Completed in {elapsedSeconds}s</span>}
+                        {hasPendingOrder
+                            ? `${executionMode || mode} ${tradeTitle} - Order submitted. You can confirm fill in your Coinbase app.`
+                            : `${executionMode || mode} ${tradeTitle} - Order filled. You can also confirm in your Coinbase app.`}
+                        {elapsedSeconds > 0 && (
+                            <span className="text-xs ml-1">Completed in {elapsedSeconds}s</span>
+                        )}
                     </span>
                 </div>
             )}
@@ -362,9 +414,12 @@ export default function TradeProcessingCard({
                 </button>
             </div>
 
-            {/* Debug info - sanitized: no run_id/trace_id in DOM */}
+            {/* Debug info */}
             {showDebug && (
                 <div className="text-xs font-mono bg-neutral-900/50 p-2 rounded-lg theme-text-muted space-y-1">
+                    {process.env.NEXT_PUBLIC_DEBUG_TRADE_DIAGNOSTICS === '1' && (
+                        <div data-testid="debug-run-id">run_id: {runId}</div>
+                    )}
                     <div>status: {status}</div>
                     <div>step: {currentStep || 'none'}</div>
                     <div>progress: {completedSteps}/{totalSteps} ({progressPercent}%)</div>

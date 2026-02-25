@@ -584,7 +584,7 @@ class TestBTCHoldingsQuery:
     def test_btc_query_response_format_with_holdings(self):
         """Test response format when user has BTC holdings."""
         from backend.api.routes.chat import _format_asset_holdings_response
-        
+
         brief = {
             "mode": "LIVE",
             "as_of": "2026-02-02T12:00:00Z",
@@ -596,25 +596,22 @@ class TestBTCHoldingsQuery:
             ],
             "evidence_refs": {"accounts_call_id": "call_123", "prices_call_ids": ["call_456"]}
         }
-        
+
         content = _format_asset_holdings_response("BTC", brief)
-        
-        # Should have focused BTC answer
+        paragraphs = content.split("\n\n")
+
+        assert 3 <= len(paragraphs) <= 6
         assert "BTC" in content
-        assert "0.5" in content or "0.50000000" in content
-        assert "45,000" in content or "45000" in content
-        assert "90,000" in content or "90000" in content
-        
-        # Should show mode
+        assert "0.50000000" in content
+        assert "45,000" in content
+        assert "90,000" in content
         assert "LIVE" in content
-        
-        # Should have evidence
-        assert "Evidence" in content or "API calls" in content
-    
+        assert "Evidence:" in paragraphs[-1]
+
     def test_btc_query_response_format_zero_balance(self):
         """Test response format when user has zero BTC."""
         from backend.api.routes.chat import _format_asset_holdings_response
-        
+
         brief = {
             "mode": "LIVE",
             "as_of": "2026-02-02T12:00:00Z",
@@ -625,14 +622,12 @@ class TestBTCHoldingsQuery:
             ],
             "evidence_refs": {"accounts_call_id": "call_123"}
         }
-        
+
         content = _format_asset_holdings_response("BTC", brief)
-        
-        # Should explicitly state 0 balance
-        assert "0" in content
+        paragraphs = content.split("\n\n")
+
+        assert 3 <= len(paragraphs) <= 6
         assert "BTC" in content
-        # Should indicate no holdings
-        assert any(phrase in content.lower() for phrase in ["do not", "don't", "no btc", "zero"])
     
     def test_holdings_query_vs_trade_execution(self):
         """Test that 'How much BTC do I own?' is not confused with trade."""

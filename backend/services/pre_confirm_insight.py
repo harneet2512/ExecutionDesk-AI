@@ -18,6 +18,18 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 from backend.core.logging import get_logger
+from backend.services.news_evidence import (
+    build_market_news_evidence,
+    build_news_evidence_from_insight,
+    build_news_query_terms,
+)
+from backend.services.news_smart import (
+    build_adaptive_queries,
+    classify_asset,
+    fetch_market_fallback,
+    rank_headlines,
+    select_fallback_queries,
+)
 from backend.db.connect import get_conn
 
 logger = get_logger(__name__)
@@ -48,9 +60,16 @@ _insight_cache: Dict[str, Tuple[dict, float]] = {}
 CACHE_TTL = 60
 
 
-def _cache_key(symbol: str, side: str, notional_usd: float, mode: str, news_enabled: bool) -> str:
+def _cache_key(
+    symbol: str,
+    side: str,
+    notional_usd: float,
+    mode: str,
+    news_enabled: bool,
+    lookback_hours: int = 24,
+) -> str:
     notional_bucket = round(notional_usd, -1) if notional_usd >= 10 else round(notional_usd, 0)
-    return f"{symbol}:{side}:{notional_bucket}:{mode}:{news_enabled}"
+    return f"{symbol}:{side}:{notional_bucket}:{mode}:{news_enabled}:{lookback_hours}"
 
 
 def _cache_get(key: str) -> Optional[dict]:
@@ -77,9 +96,12 @@ def _cache_set(key: str, data: dict) -> None:
 
 async def _fetch_candles_fallback(symbol: str) -> List[dict]:
     """Fetch candles from Coinbase public API as fallback when DB is empty.
-    
+
     Returns list of candle dicts with keys: close, high, low, start_time.
     """
+    from backend.core.test_utils import is_pytest
+    if is_pytest():
+        return []
     try:
         from backend.core.symbols import to_product_id
         import httpx
@@ -166,10 +188,18 @@ async def _fetch_candles_fallback(symbol: str) -> List[dict]:
 async def _fetch_price_data(symbol: str) -> dict:
     """Fetch price + 24h change + 7d range from market data provider.
 
-    Returns dict with keys: price, change_24h_pct, change_7d_pct, range_7d_high, 
+    Returns dict with keys: price, change_24h_pct, change_7d_pct, range_7d_high,
     range_7d_low, price_pct_of_range, volatility_7d_atr, price_source.
     On failure, returns price=None.
     """
+    from backend.core.test_utils import is_pytest
+    if is_pytest():
+        # Skip real HTTP calls in test mode — returns price=None, insight degrades gracefully
+        return {
+            "price": None, "change_24h_pct": None, "change_7d_pct": None,
+            "range_7d_high": None, "range_7d_low": None, "price_pct_of_range": None,
+            "volatility_7d_atr": None, "price_source": "none",
+        }
     try:
         from backend.services.market_data import get_price
         price = get_price(symbol)
@@ -377,105 +407,79 @@ def _analyze_headline_sentiment(headline: str) -> dict:
 # News headlines (DB query, 1.5s budget)
 # ---------------------------------------------------------------------------
 
-def _fetch_headlines(symbol: str, limit: int = 5) -> Tuple[List[dict], bool, str]:
+def _fetch_headlines(
+    symbol: str,
+    limit: int = 5,
+    lookback_hours: int = 24,
+) -> Tuple[List[dict], List[dict], bool, dict]:
     """Fetch recent headlines mentioning this asset from news_items table.
 
-    Returns (headlines_list, fetch_failed, diagnostic_reason) tuple.
-    Each headline includes sentiment analysis.
-    ``diagnostic_reason`` is a human-readable string explaining why no
-    headlines were returned (empty string on success).
-    
-    Tries multiple symbol variants (BTC, BTC-USD, Bitcoin) to maximize matches.
+    Returns (asset_headlines, market_headlines, fetch_failed, metadata) tuple.
     """
+    symbol_display = symbol.upper().replace("-USD", "")
+    meta = {
+        "asset_queries": [],
+        "lookback": f"{lookback_hours}h",
+        "asset_status": "ok",
+        "asset_reason": "",
+        "fallback_queries": [],
+        "fallback_status": "",
+        "fallback_reason": "",
+        "fallback_rationale": "",
+        "asset_category": "UNKNOWN",
+    }
     try:
-        # Generate symbol variants to try
-        from backend.core.symbols import to_product_id
-        symbol_variants = [symbol]
-        
-        # Add product_id variant (e.g., "BTC" -> "BTC-USD")
-        try:
-            product_id = to_product_id(symbol)
-            if product_id != symbol and product_id not in symbol_variants:
-                symbol_variants.append(product_id)
-        except Exception:
-            pass
-        
-        # Add common name variants for major cryptos
-        symbol_upper = symbol.upper().replace("-USD", "")
-        name_mapping = {
-            "BTC": ["Bitcoin", "BTC-USD", "bitcoin"],
-            "ETH": ["Ethereum", "ETH-USD", "ethereum", "Ether"],
-            "SOL": ["Solana", "SOL-USD", "solana"],
-            "USDC": ["USD Coin", "USDC-USD"],
-            "DOGE": ["Dogecoin", "DOGE-USD", "dogecoin"],
-            "MATIC": ["Polygon", "MATIC-USD", "polygon"],
-            "AVAX": ["Avalanche", "AVAX-USD", "avalanche"],
-            "ADA": ["Cardano", "ADA-USD", "cardano"],
-            "DOT": ["Polkadot", "DOT-USD", "polkadot"],
-            "LINK": ["Chainlink", "LINK-USD", "chainlink"],
-            "XRP": ["Ripple", "XRP-USD", "ripple"],
-            "UNI": ["Uniswap", "UNI-USD", "uniswap"],
-            "LTC": ["Litecoin", "LTC-USD", "litecoin"],
-            "ATOM": ["Cosmos", "ATOM-USD", "cosmos"],
-            "SHIB": ["Shiba Inu", "SHIB-USD"],
-        }
-        if symbol_upper in name_mapping:
-            for variant in name_mapping[symbol_upper]:
-                if variant not in symbol_variants:
-                    symbol_variants.append(variant)
-        
-        # Try 48h window first, then expand to 72h if no results
-        time_windows = [48, 72]
-        
-        for hours in time_windows:
-            cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
-            
-            with get_conn() as conn:
-                cursor = conn.cursor()
-                
-                # Build query with multiple symbol variants
-                placeholders = ",".join("?" * len(symbol_variants))
-                query = f"""
-                    SELECT DISTINCT ni.title, ni.url, ni.published_at, ns.name as source_name
-                    FROM news_items ni
-                    JOIN news_asset_mentions nam ON ni.id = nam.item_id
-                    LEFT JOIN news_sources ns ON ni.source_id = ns.id
-                    WHERE nam.asset_symbol IN ({placeholders})
-                      AND ni.published_at >= ?
-                    ORDER BY ni.published_at DESC
-                    LIMIT ?
-                """
-                
-                params = symbol_variants + [cutoff, limit]
-                cursor.execute(query, params)
-                rows = cursor.fetchall()
-                
-                if rows:
-                    headlines = []
-                    for row in rows:
-                        title = row["title"]
-                        sa = _analyze_headline_sentiment(title)
-                        headlines.append({
-                            "title": title,
-                            "url": row["url"] if "url" in row.keys() else None,
-                            "published_at": row["published_at"],
-                            "source": row["source_name"] if "source_name" in row.keys() else "Unknown",
-                            "sentiment": sa["sentiment"],
-                            "confidence": sa["confidence"],
-                            "driver": sa["driver"],
-                            "rationale": sa["rationale"],
-                        })
-                    
-                    if headlines:
-                        logger.debug(
-                            f"Found {len(headlines)} headlines for {symbol} "
-                            f"(tried variants: {symbol_variants}, window: {hours}h)"
-                        )
-                        return headlines, False, ""
-        
-        # No headlines found after trying all variants and time windows.
-        # Check if news_sources are enabled to provide a diagnostic reason.
-        diagnostic_reason = "no matching headlines in 72h window"
+        adaptive = build_adaptive_queries(symbol, lookback_hours=lookback_hours)
+        symbol_variants = adaptive.queries
+        meta["asset_queries"] = symbol_variants
+        cutoff = (datetime.utcnow() - timedelta(hours=lookback_hours)).isoformat()
+
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            placeholders = ",".join("?" * len(symbol_variants))
+            query = f"""
+                SELECT DISTINCT ni.title, ni.url, ni.published_at, ns.name as source_name
+                FROM news_items ni
+                JOIN news_asset_mentions nam ON ni.id = nam.item_id
+                LEFT JOIN news_sources ns ON ni.source_id = ns.id
+                WHERE nam.asset_symbol IN ({placeholders})
+                  AND ni.published_at >= ?
+                ORDER BY ni.published_at DESC
+                LIMIT 100
+            """
+            params = symbol_variants + [cutoff]
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+        deduped = []
+        seen = set()
+        for row in rows:
+            title = row["title"]
+            source = row["source_name"] if "source_name" in row.keys() else "Unknown"
+            dedupe_key = f"{(title or '').strip().lower()}::{(source or '').strip().lower()}"
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            sa = _analyze_headline_sentiment(title)
+            deduped.append({
+                "title": title,
+                "url": row["url"] if "url" in row.keys() else None,
+                "published_at": row["published_at"],
+                "source": source,
+                "sentiment": sa["sentiment"],
+                "confidence": sa["confidence"],
+                "driver": sa["driver"],
+                "rationale": sa["rationale"],
+            })
+
+        if deduped:
+            ranked = rank_headlines(deduped, symbol_variants, limit=limit)
+            meta["asset_status"] = "ok"
+            return ranked, [], False, meta
+
+        diagnostic_reason = f"No relevant news found for {symbol_display} in the last {lookback_hours}h."
+        meta["asset_status"] = "empty"
+        meta["asset_reason"] = diagnostic_reason
         try:
             with get_conn() as conn:
                 cursor = conn.cursor()
@@ -491,17 +495,13 @@ def _fetch_headlines(symbol: str, limit: int = 5) -> Tuple[List[dict], bool, str
                     diagnostic_reason = "news sources enabled but 0 articles ingested -- trigger ingestion"
                 else:
                     diagnostic_reason = (
-                        f"0 of {total_items} articles match {symbol_variants} in 72h; "
+                        f"0 of {total_items} articles match {symbol_variants} in {lookback_hours}h; "
                         f"try ingesting more sources"
                     )
         except Exception:
             pass  # best-effort diagnostic
+        meta["asset_reason"] = diagnostic_reason
 
-        logger.info(
-            "No headlines for %s (%s). Variants tried: %s",
-            symbol, diagnostic_reason, symbol_variants,
-        )
-        # Telemetry: emit news_fetch_zero_results metric
         try:
             from backend.evals.runtime_evals import emit_runtime_metric
             emit_runtime_metric("news_fetch_zero_results", {
@@ -512,50 +512,28 @@ def _fetch_headlines(symbol: str, limit: int = 5) -> Tuple[List[dict], bool, str
         except Exception:
             pass  # best-effort telemetry
 
-        # Simulated fallback: provide deterministic dev-mode headlines so the
-        # insight card is never empty during development / demo.
-        use_simulated = os.environ.get("NEWS_USE_SIMULATED_FALLBACK", "true").lower() in ("1", "true", "yes")
-        if use_simulated:
-            symbol_display = symbol_upper or symbol
-            simulated_headlines = [
-                {
-                    "title": f"[Simulated] {symbol_display} market shows mixed signals amid steady volume",
-                    "url": None,
-                    "published_at": datetime.utcnow().isoformat(),
-                    "source": "Simulated",
-                    "sentiment": "neutral",
-                    "confidence": 0.3,
-                    "driver": "mixed",
-                    "rationale": "simulated headline for development — no live feeds matched",
-                },
-                {
-                    "title": f"[Simulated] Analysts watching {symbol_display} price action closely this week",
-                    "url": None,
-                    "published_at": (datetime.utcnow() - timedelta(hours=6)).isoformat(),
-                    "source": "Simulated",
-                    "sentiment": "neutral",
-                    "confidence": 0.25,
-                    "driver": "mixed",
-                    "rationale": "simulated headline for development — no live feeds matched",
-                },
-                {
-                    "title": f"[Simulated] Crypto markets flat as {symbol_display} consolidates near key level",
-                    "url": None,
-                    "published_at": (datetime.utcnow() - timedelta(hours=12)).isoformat(),
-                    "source": "Simulated",
-                    "sentiment": "neutral",
-                    "confidence": 0.25,
-                    "driver": "mixed",
-                    "rationale": "simulated headline for development — no live feeds matched",
-                },
-            ]
-            logger.info(
-                "Using %d simulated fallback headlines for %s (NEWS_USE_SIMULATED_FALLBACK=true)",
-                len(simulated_headlines), symbol,
-            )
-            return simulated_headlines, False, f"simulated fallback ({diagnostic_reason})"
-
-        return [], False, diagnostic_reason
+        category = classify_asset(symbol)
+        fallback = select_fallback_queries(symbol, category)
+        market_raw = fetch_market_fallback(fallback.queries, lookback_hours=lookback_hours, limit=limit)
+        market_headlines = []
+        for item in market_raw:
+            sa = _analyze_headline_sentiment(item.get("title") or "")
+            market_headlines.append({
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "published_at": item.get("published_at"),
+                "source": item.get("source", "Unknown"),
+                "sentiment": sa["sentiment"],
+                "confidence": sa["confidence"],
+                "driver": sa["driver"],
+                "rationale": sa["rationale"],
+            })
+        meta["asset_category"] = category
+        meta["fallback_queries"] = fallback.queries
+        meta["fallback_rationale"] = fallback.rationale
+        meta["fallback_status"] = "ok" if market_headlines else "empty"
+        meta["fallback_reason"] = "" if market_headlines else "Market news unavailable right now. Please retry shortly."
+        return [], market_headlines, False, meta
         
     except Exception as e:
         err_str = str(e).lower()
@@ -564,10 +542,35 @@ def _fetch_headlines(symbol: str, limit: int = 5) -> Tuple[List[dict], bool, str
                 "Headlines tables not configured for %s (run news migrations): %s",
                 symbol, str(e)[:100]
             )
-            return [], True, "news tables not available -- apply migration 016"
+            meta["asset_status"] = "error"
+            meta["asset_reason"] = f"News unavailable for {symbol_display} right now (provider error)."
+            return [], [], True, meta
         else:
             logger.warning("Headlines fetch failed for %s: %s", symbol, str(e)[:100])
-        return [], True, f"fetch error: {str(e)[:80]}"
+        meta["asset_status"] = "error"
+        meta["asset_reason"] = f"News unavailable for {symbol_display} right now (provider error)."
+        category = classify_asset(symbol)
+        fallback = select_fallback_queries(symbol, category)
+        market_raw = fetch_market_fallback(fallback.queries, lookback_hours=lookback_hours, limit=limit)
+        market_headlines = []
+        for item in market_raw:
+            sa = _analyze_headline_sentiment(item.get("title") or "")
+            market_headlines.append({
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "published_at": item.get("published_at"),
+                "source": item.get("source", "Unknown"),
+                "sentiment": sa["sentiment"],
+                "confidence": sa["confidence"],
+                "driver": sa["driver"],
+                "rationale": sa["rationale"],
+            })
+        meta["asset_category"] = category
+        meta["fallback_queries"] = fallback.queries
+        meta["fallback_rationale"] = fallback.rationale
+        meta["fallback_status"] = "ok" if market_headlines else "error"
+        meta["fallback_reason"] = "" if market_headlines else "Market news unavailable right now. Please retry shortly."
+        return [], market_headlines, True, meta
 
 
 # ---------------------------------------------------------------------------
@@ -581,10 +584,19 @@ def build_fact_pack(
     asset_class: str,
     price_data: dict,
     headlines: List[dict],
+    market_headlines: Optional[List[dict]] = None,
     mode: str = "PAPER",
     news_enabled: bool = True,
     headlines_fetch_failed: bool = False,
     headlines_diagnostic: str = "",
+    lookback_hours: int = 24,
+    asset_queries: Optional[List[str]] = None,
+    fallback_queries: Optional[List[str]] = None,
+    fallback_rationale: str = "",
+    asset_category: str = "OTHER",
+    asset_status: str = "ok",
+    market_status: str = "",
+    market_reason: str = "",
 ) -> dict:
     """Build deterministic fact pack from price data and headlines."""
     price = price_data.get("price")
@@ -696,6 +708,7 @@ def build_fact_pack(
         confidence -= 0.20
     confidence = max(0.0, min(1.0, confidence))
 
+    market_headlines = market_headlines or []
     # Top headlines for template use
     top_headlines = [h["title"] for h in headlines[:3]]
     headline_sources = list({h.get("source", "Unknown") for h in headlines})
@@ -754,7 +767,9 @@ def build_fact_pack(
         key_facts.append(f"Fee represents {fee_impact_pct:.1f}% of order value")
 
     if headlines:
-        key_facts.append(f"{len(headlines)} headline(s) in last 48h")
+        key_facts.append(f"{len(headlines)} headline(s) in last {lookback_hours}h")
+    elif market_headlines:
+        key_facts.append(f"{len(market_headlines)} broader market headline(s) in last {lookback_hours}h")
     elif news_enabled and not headlines_fetch_failed:
         key_facts.append("No headlines available (feed returned none)")
     elif headlines_fetch_failed:
@@ -789,12 +804,27 @@ def build_fact_pack(
         "estimated_fees_usd": estimated_fees_usd,
         "fee_impact_pct": fee_impact_pct,
         "data_quality": data_quality,
-        "headlines_window_hours": 48,
+        "headlines_window_hours": lookback_hours,
         "top_headlines": top_headlines,
         "headline_sources": headline_sources,
         "headline_sentiment_summary": headline_sentiment_summary,
         "sentiment_counts": sentiment_counts,
         "news_enabled": news_enabled,
+        "news_query_terms": asset_queries or build_news_query_terms(asset),
+        "news_lookback": f"{lookback_hours}h",
+        "news_sources": ["RSS", "GDELT"],
+        "news_status": asset_status,
+        "news_reason": (
+            headlines_diagnostic
+            if headlines_fetch_failed or (news_enabled and len(headlines) == 0)
+            else ""
+        ),
+        "market_headlines": market_headlines,
+        "market_fallback_rationale": fallback_rationale,
+        "market_fallback_queries": fallback_queries or [],
+        "asset_category": asset_category,
+        "market_status": market_status,
+        "market_reason": market_reason,
     }
 
 
@@ -1035,7 +1065,9 @@ async def _llm_enhance_insight(facts: dict, template: dict, timeout_s: float = 2
 
     try:
         from openai import AsyncOpenAI
-        client = AsyncOpenAI()
+        from backend.core.config import get_settings
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
 
         # Build structured prompt from fact_pack
         headlines_section = ""
@@ -1087,7 +1119,7 @@ Respond in JSON format:
 
         response = await asyncio.wait_for(
             client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=settings.openai_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=400,
@@ -1124,11 +1156,72 @@ Respond in JSON format:
         return None
 
 
+def _build_impact_summary(facts: dict) -> str:
+    asset_headlines = facts.get("headlines", []) or []
+    market_headlines = facts.get("market_headlines", []) or []
+    all_headlines = asset_headlines + market_headlines
+    if not all_headlines:
+        return "No headline signal found; decision is based on price/portfolio checks only."
+    first_title = all_headlines[0].get("title", "").strip()
+    second_title = all_headlines[1].get("title", "").strip() if len(all_headlines) > 1 else ""
+    if first_title and second_title:
+        return f'Headline themes are "{first_title}" and "{second_title}".'
+    if first_title:
+        return f'Headline theme is "{first_title}".'
+    return "No headline signal found; decision is based on price/portfolio checks only."
+
+
+def _ensure_news_contract(
+    insight: dict,
+    *,
+    asset: str,
+    lookback_hours: int,
+    news_enabled: bool,
+) -> dict:
+    if not isinstance(insight, dict):
+        insight = {}
+    lookback = f"{lookback_hours}h"
+    default_queries = build_news_query_terms(asset)
+    news_outcome = insight.get("news_outcome") if isinstance(insight.get("news_outcome"), dict) else {}
+    news_outcome.setdefault("queries", default_queries)
+    news_outcome.setdefault("lookback", lookback)
+    news_outcome.setdefault("sources", ["RSS", "GDELT"])
+    news_outcome.setdefault("status", "ok" if not news_enabled else "empty")
+    news_outcome.setdefault("reason", "" if not news_enabled else f"No relevant news found for {asset.upper().replace('-USD', '')} in the last {lookback}.")
+    news_outcome.setdefault("items", 0)
+    insight["news_outcome"] = news_outcome
+
+    asset_ev = insight.get("asset_news_evidence")
+    if not isinstance(asset_ev, dict):
+        asset_ev = {
+            "assets": [asset],
+            "queries": news_outcome.get("queries", default_queries),
+            "lookback": news_outcome.get("lookback", lookback),
+            "sources": news_outcome.get("sources", ["RSS", "GDELT"]),
+            "status": news_outcome.get("status", "empty"),
+            "items": [],
+            "reason_if_empty_or_error": news_outcome.get("reason", ""),
+        }
+    else:
+        asset_ev.setdefault("assets", [asset])
+        asset_ev.setdefault("queries", news_outcome.get("queries", default_queries))
+        asset_ev.setdefault("lookback", news_outcome.get("lookback", lookback))
+        asset_ev.setdefault("sources", news_outcome.get("sources", ["RSS", "GDELT"]))
+        asset_ev.setdefault("status", news_outcome.get("status", "empty"))
+        asset_ev.setdefault("items", [])
+        asset_ev.setdefault("reason_if_empty_or_error", news_outcome.get("reason", ""))
+    insight["asset_news_evidence"] = asset_ev
+    insight.setdefault("impact_summary", "No headline signal found; decision is based on price/portfolio checks only.")
+    insight.setdefault("market_headlines", [])
+    if "market_news_evidence" not in insight:
+        insight["market_news_evidence"] = None
+    return insight
+
+
 def _build_template_insight(facts: dict, request_id: str) -> dict:
     """Build a complete template-based insight from facts."""
-    # Include headline objects with sentiment so the UI can render sentiment badges
     headline_objs = []
-    for h in facts.get("headlines", [])[:3]:
+    for h in facts.get("headlines", [])[:5]:
         headline_objs.append({
             "title": h["title"],
             "sentiment": h.get("sentiment", "neutral"),
@@ -1140,7 +1233,20 @@ def _build_template_insight(facts: dict, request_id: str) -> dict:
             "published_at": h.get("published_at"),
         })
 
-    return InsightSchema(
+    market_headline_objs = []
+    for h in facts.get("market_headlines", [])[:5]:
+        market_headline_objs.append({
+            "title": h["title"],
+            "sentiment": h.get("sentiment", "neutral"),
+            "confidence": h.get("confidence", 0),
+            "driver": h.get("driver", "none"),
+            "rationale": h.get("rationale", ""),
+            "source": h.get("source", "Unknown"),
+            "url": h.get("url"),
+            "published_at": h.get("published_at"),
+        })
+
+    base = InsightSchema(
         headline=_template_headline(facts),
         why_it_matters=_template_why_it_matters(facts),
         key_facts=facts.get("key_facts", []),
@@ -1154,6 +1260,47 @@ def _build_template_insight(facts: dict, request_id: str) -> dict:
         request_id=request_id
     ).model_dump()
 
+    asset_news_evidence = build_news_evidence_from_insight(
+        asset_symbol=facts.get("asset", ""),
+        insight={"sources": {"headlines": headline_objs}},
+        lookback=facts.get("news_lookback", "24h"),
+        sources=facts.get("news_sources", ["RSS", "GDELT"]),
+        provider_error=facts.get("news_reason") if facts.get("news_status") == "error" else None,
+    )
+
+    market_news_evidence = None
+    if facts.get("market_fallback_queries"):
+        market_news_evidence = build_market_news_evidence(
+            queries=facts.get("market_fallback_queries", []),
+            lookback=facts.get("news_lookback", "24h"),
+            sources=facts.get("news_sources", ["RSS", "GDELT"]),
+            status=facts.get("market_status", "ok"),
+            reason_if_empty_or_error=facts.get("market_reason", ""),
+            rationale=facts.get("market_fallback_rationale", ""),
+            items=market_headline_objs,
+        )
+
+    insight = base | {
+        "impact_summary": _build_impact_summary(facts),
+        "market_headlines": market_headline_objs,
+        "news_outcome": {
+            "queries": facts.get("news_query_terms", []),
+            "lookback": facts.get("news_lookback", "24h"),
+            "sources": facts.get("news_sources", ["RSS", "GDELT"]),
+            "status": facts.get("news_status", "ok"),
+            "reason": facts.get("news_reason", ""),
+            "items": len(headline_objs),
+        },
+        "asset_news_evidence": asset_news_evidence,
+        "market_news_evidence": market_news_evidence,
+    }
+    return _ensure_news_contract(
+        insight,
+        asset=facts.get("asset", ""),
+        lookback_hours=int(str(facts.get("news_lookback", "24h")).replace("h", "") or 24),
+        news_enabled=bool(facts.get("news_enabled", True)),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -1166,6 +1313,7 @@ async def generate_insight(
     asset_class: str = "CRYPTO",
     news_enabled: bool = True,
     mode: str = "PAPER",
+    lookback_hours: int = 24,
     request_id: str = ""
 ) -> dict:
     """Generate a pre-confirm financial insight.
@@ -1175,28 +1323,62 @@ async def generate_insight(
     """
     try:
         # Check cache
-        ck = _cache_key(asset, side, notional_usd, mode, news_enabled)
+        ck = _cache_key(asset, side, notional_usd, mode, news_enabled, lookback_hours)
         cached = _cache_get(ck)
         if cached:
             # Update request_id for this specific request
             cached["request_id"] = request_id
-            return cached
+            return _ensure_news_contract(
+                cached,
+                asset=asset,
+                lookback_hours=lookback_hours,
+                news_enabled=news_enabled,
+            )
 
         # Gather facts
         price_data = await _fetch_price_data(asset)
         headlines_fetch_failed = False
         headlines_diagnostic = ""
+        market_headlines = []
+        news_meta = {}
         if news_enabled:
-            headlines, headlines_fetch_failed, headlines_diagnostic = _fetch_headlines(asset)
+            headlines, market_headlines, headlines_fetch_failed, news_meta = _fetch_headlines(
+                asset,
+                lookback_hours=lookback_hours,
+            )
+            headlines_diagnostic = news_meta.get("asset_reason", "")
         else:
             headlines = []
+            market_headlines = []
             headlines_diagnostic = "news toggle is OFF"
+            news_meta = {
+                "asset_queries": [],
+                "asset_status": "ok",
+                "asset_reason": "news toggle is OFF",
+                "fallback_queries": [],
+                "fallback_rationale": "",
+                "asset_category": "OTHER",
+                "fallback_status": "",
+                "fallback_reason": "",
+            }
 
         facts = build_fact_pack(
             asset, side, notional_usd, asset_class, price_data, headlines,
+            market_headlines=market_headlines,
             mode=mode, news_enabled=news_enabled,
             headlines_fetch_failed=headlines_fetch_failed,
             headlines_diagnostic=headlines_diagnostic,
+            lookback_hours=lookback_hours,
+            asset_queries=news_meta.get("asset_queries", build_news_query_terms(asset)),
+            fallback_queries=news_meta.get("fallback_queries", []),
+            fallback_rationale=news_meta.get("fallback_rationale", ""),
+            asset_category=news_meta.get("asset_category", "UNKNOWN"),
+            asset_status=news_meta.get(
+                "asset_status",
+                ("error" if headlines_fetch_failed else ("empty" if news_enabled and len(headlines) == 0 else "ok")),
+            ),
+            market_status=news_meta.get("fallback_status", ""),
+            market_reason=news_meta.get("fallback_reason", ""),
         )
 
         # Build template insight (always works)
@@ -1217,12 +1399,17 @@ async def generate_insight(
 
         # Cache and return
         _cache_set(ck, insight)
-        return insight
+        return _ensure_news_contract(
+            insight,
+            asset=asset,
+            lookback_hours=lookback_hours,
+            news_enabled=news_enabled,
+        )
 
     except Exception as e:
         logger.warning("Insight generation failed: %s", str(e)[:200])
         # Absolute fallback
-        return InsightSchema(
+        fallback = InsightSchema(
             headline="Market insight unavailable",
             why_it_matters="Unable to generate insight. Confirm or cancel at your discretion.",
             key_facts=[],
@@ -1232,3 +1419,9 @@ async def generate_insight(
             generated_by="template",
             request_id=request_id
         ).model_dump()
+        return _ensure_news_contract(
+            fallback,
+            asset=asset,
+            lookback_hours=lookback_hours,
+            news_enabled=news_enabled,
+        )

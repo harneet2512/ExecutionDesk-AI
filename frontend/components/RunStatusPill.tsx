@@ -16,7 +16,7 @@ const STATUS_CONFIG: Record<string, { color: string; icon: string; label: string
     RUNNING: { color: 'bg-neutral-500', icon: '◐', label: 'Executing', spinning: true },
     EXECUTING: { color: 'bg-neutral-500', icon: '◐', label: 'Executing', spinning: true },
     PAUSED: { color: 'bg-neutral-400', icon: '⏸', label: 'Paused' },
-    COMPLETED: { color: 'bg-[var(--color-status-success)]', icon: '✓', label: 'Executed' },
+    COMPLETED: { color: 'bg-[var(--color-status-success)]', icon: '✓', label: 'Completed' },
     FAILED: { color: 'bg-[var(--color-status-error)]', icon: '✕', label: 'Failed' },
 };
 

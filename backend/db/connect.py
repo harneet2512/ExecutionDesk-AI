@@ -5,7 +5,7 @@ import time
 import random
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
 from backend.core.config import get_settings
 from backend.core.logging import get_logger
 
@@ -13,6 +13,9 @@ logger = get_logger(__name__)
 
 # DB busy/lock error substrings
 _BUSY_ERRORS = ("database is locked", "database table is locked")
+
+# INV-5: Canonical DB path — resolved once, asserted on every connection.
+_CANONICAL_DB_PATH: Optional[str] = None
 
 
 def _close_connections():
@@ -22,6 +25,24 @@ def _close_connections():
     this is a no-op. Provided for test fixture compatibility.
     """
     pass
+
+
+def reset_canonical_db_path():
+    """Reset the cached canonical path (for test isolation only)."""
+    global _CANONICAL_DB_PATH
+    _CANONICAL_DB_PATH = None
+
+
+def get_canonical_db_path() -> str:
+    """Return the canonical absolute DB file path, resolving it on first call."""
+    global _CANONICAL_DB_PATH
+    if _CANONICAL_DB_PATH is not None:
+        return _CANONICAL_DB_PATH
+    settings = get_settings()
+    raw = _parse_db_url(settings.database_url)
+    resolved = os.path.abspath(raw)
+    _CANONICAL_DB_PATH = resolved
+    return resolved
 
 
 def _parse_db_url(url: str) -> str:
@@ -37,9 +58,19 @@ def _parse_db_url(url: str) -> str:
 @contextmanager
 def get_conn() -> Generator[sqlite3.Connection, None, None]:
     """Get database connection context manager."""
+    global _CANONICAL_DB_PATH
+
+    db_path = get_canonical_db_path()
+
+    # Assert path stability within a process (INV-5).
     settings = get_settings()
-    db_path = _parse_db_url(settings.database_url)
-    
+    current_resolved = os.path.abspath(_parse_db_url(settings.database_url))
+    if current_resolved != db_path:
+        logger.critical(
+            "DB_PATH_DRIFT: canonical=%s current=%s — settings or CWD changed mid-process",
+            db_path, current_resolved,
+        )
+
     # Ensure directory exists
     db_dir = os.path.dirname(db_path)
     if db_dir:

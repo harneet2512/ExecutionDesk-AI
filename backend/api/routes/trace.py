@@ -21,6 +21,16 @@ def _safe_json_loads(s, default=None):
         return default if default is not None else {}
 
 
+def _to_float(value):
+    """Best-effort float conversion."""
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @router.get("/{run_id}/trace")
 async def get_trace(run_id: str, user: dict = Depends(require_viewer)):
     """
@@ -82,7 +92,7 @@ async def get_trace(run_id: str, user: dict = Depends(require_viewer)):
         
         # Get artifacts
         cursor.execute(
-            "SELECT ranking_id, table_json, selected_symbol, selected_score FROM rankings WHERE run_id = ? ORDER BY ts DESC LIMIT 1",
+            "SELECT ranking_id, table_json, selected_symbol, selected_score, window FROM rankings WHERE run_id = ? ORDER BY ts DESC LIMIT 1",
             (run_id,)
         )
         ranking_row = cursor.fetchone()
@@ -93,12 +103,67 @@ async def get_trace(run_id: str, user: dict = Depends(require_viewer)):
             (run_id,)
         )
         candles_batches = []
+        candles_by_symbol = {}
         for batch_row in cursor.fetchall():
+            candles = _safe_json_loads(batch_row["candles_json"], [])
+            if isinstance(candles, list):
+                candles_by_symbol[str(batch_row["symbol"])] = candles
             candles_batches.append({
                 "batch_id": batch_row["batch_id"],
                 "symbol": batch_row["symbol"],
-                "candles_count": len(_safe_json_loads(batch_row["candles_json"], []))
+                "candles_count": len(candles) if isinstance(candles, list) else 0
             })
+
+        enriched_rankings = []
+        if isinstance(rankings, list):
+            for rank in rankings:
+                if not isinstance(rank, dict):
+                    continue
+                symbol = str(rank.get("symbol") or "")
+                candles = candles_by_symbol.get(symbol, [])
+                first_price = _to_float(rank.get("first_price"))
+                last_price = _to_float(rank.get("last_price"))
+                return_pct = _to_float(rank.get("return_pct"))
+                first_price_reason = None
+                last_price_reason = None
+                return_reason = None
+
+                if (first_price is None or last_price is None) and isinstance(candles, list) and len(candles) > 0:
+                    first_candle = candles[0] if isinstance(candles[0], dict) else {}
+                    last_candle = candles[-1] if isinstance(candles[-1], dict) else {}
+                    if first_price is None:
+                        first_price = _to_float(first_candle.get("open") if isinstance(first_candle, dict) else None)
+                        if first_price is None:
+                            first_price = _to_float(first_candle.get("o") if isinstance(first_candle, dict) else None)
+                    if last_price is None:
+                        last_price = _to_float(last_candle.get("close") if isinstance(last_candle, dict) else None)
+                        if last_price is None:
+                            last_price = _to_float(last_candle.get("c") if isinstance(last_candle, dict) else None)
+
+                if first_price is None:
+                    first_price_reason = "Missing first candle open for selected lookback"
+                if last_price is None:
+                    last_price_reason = "Missing last candle close for selected lookback"
+
+                if return_pct is None:
+                    if first_price is not None and last_price is not None and first_price != 0:
+                        return_pct = ((last_price - first_price) / first_price) * 100.0
+                    else:
+                        return_reason = "Return unavailable because first/last price could not be computed"
+
+                enriched = dict(rank)
+                enriched["first_price"] = first_price
+                enriched["last_price"] = last_price
+                enriched["return_pct"] = return_pct
+                if first_price_reason:
+                    enriched["first_price_reason"] = first_price_reason
+                if last_price_reason:
+                    enriched["last_price_reason"] = last_price_reason
+                if return_reason:
+                    enriched["return_reason"] = return_reason
+                enriched_rankings.append(enriched)
+        else:
+            enriched_rankings = []
         
         cursor.execute(
             "SELECT id, tool_name, mcp_server, status FROM tool_calls WHERE run_id = ? ORDER BY ts DESC LIMIT 20",
@@ -135,9 +200,13 @@ async def get_trace(run_id: str, user: dict = Depends(require_viewer)):
             "parsed_intent": parsed_intent,
             "steps": steps,
             "artifacts": {
-                "rankings": rankings[:10],  # Top 10
+                "rankings": enriched_rankings[:10],  # Top 10
                 "candles_batches": candles_batches,
-                "tool_calls": tool_calls
+                "tool_calls": tool_calls,
+                "rankings_meta": {
+                    "lookback_window": ranking_row["window"] if ranking_row and "window" in ranking_row.keys() else None,
+                    "universe_count": len(enriched_rankings),
+                },
             },
             "current_step": current_step,
             "status": row["status"],
@@ -158,6 +227,34 @@ async def get_trace(run_id: str, user: dict = Depends(require_viewer)):
                 trace["portfolio_brief"] = _safe_json_loads(pf_row["artifact_json"])
         except Exception:
             pass  # Table may not exist or no artifact
+
+        # Fetch trade_plan artifact if available
+        try:
+            cursor.execute(
+                """SELECT artifact_json FROM run_artifacts
+                   WHERE run_id = ? AND artifact_type = 'trade_plan'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (run_id,)
+            )
+            tp_row = cursor.fetchone()
+            if tp_row:
+                trace["trade_plan"] = _safe_json_loads(tp_row["artifact_json"])
+        except Exception:
+            pass
+
+        # Fetch trade_receipt artifact if available
+        try:
+            cursor.execute(
+                """SELECT artifact_json FROM run_artifacts
+                   WHERE run_id = ? AND artifact_type = 'trade_receipt'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (run_id,)
+            )
+            tr_row = cursor.fetchone()
+            if tr_row:
+                trace["trade_receipt"] = _safe_json_loads(tr_row["artifact_json"])
+        except Exception:
+            pass
 
         response = JSONResponse(content=trace)
         if row and "trace_id" in row.keys() and row["trace_id"]:

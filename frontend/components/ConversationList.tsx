@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { listConversations, createConversation, deleteConversation, type Conversation } from '@/lib/api';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 function getFriendlySidebarError(error: any): string {
     const message = String(error?.message || '');
@@ -29,10 +29,11 @@ function getFriendlySidebarError(error: any): string {
 
 export default function ConversationList() {
     const router = useRouter();
+    const searchParams = useSearchParams();
+    const activeConversationId = searchParams?.get('conversation') ?? null;
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
-    const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
     const [deleteModalOpen, setDeleteModalOpen] = useState(false);
     const [conversationToDelete, setConversationToDelete] = useState<string | null>(null);
     const [deleting, setDeleting] = useState(false);
@@ -60,8 +61,14 @@ export default function ConversationList() {
     const handleNewChat = async () => {
         try {
             const conv = await createConversation();
-            await loadConversations();
-            setCurrentConversationId(conv.conversation_id);
+            const newEntry: Conversation = {
+                conversation_id: conv.conversation_id,
+                tenant_id: '',
+                title: 'New Conversation',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            };
+            setConversations(prev => [newEntry, ...prev]);
             router.push(`/chat?conversation=${conv.conversation_id}`);
         } catch (e: any) {
             console.error('Failed to create conversation:', e);
@@ -70,7 +77,6 @@ export default function ConversationList() {
     };
 
     const handleSelectConversation = (conversationId: string) => {
-        setCurrentConversationId(conversationId);
         router.push(`/chat?conversation=${conversationId}`);
     };
 
@@ -92,7 +98,7 @@ export default function ConversationList() {
             setConversations(prev => prev.filter(c => c.conversation_id !== conversationToDelete));
 
             // If we deleted the current conversation, navigate to a new one
-            if (currentConversationId === conversationToDelete) {
+            if (activeConversationId === conversationToDelete) {
                 const remainingConversations = conversations.filter(c => c.conversation_id !== conversationToDelete);
                 if (remainingConversations.length > 0) {
                     handleSelectConversation(remainingConversations[0].conversation_id);
@@ -162,7 +168,7 @@ export default function ConversationList() {
                         {conversations.map((conv) => (
                             <div
                                 key={conv.conversation_id}
-                                className={`group relative flex items-center rounded-lg text-sm transition-all ${currentConversationId === conv.conversation_id
+                                className={`group relative flex items-center rounded-lg text-sm transition-all ${activeConversationId === conv.conversation_id
                                         ? 'theme-elevated border-l-2 border-neutral-500 theme-text shadow-sm'
                                         : 'hover:bg-neutral-100 dark:hover:bg-neutral-800 theme-text-secondary'
                                     }`}

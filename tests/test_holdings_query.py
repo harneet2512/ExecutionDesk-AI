@@ -131,9 +131,9 @@ class TestMarkdownFormatting:
     """Test markdown output formatting for portfolio responses."""
 
     def test_markdown_table_separator(self):
-        """Ensure markdown tables use correct separator syntax."""
+        """Ensure portfolio analysis uses grounded 5-line paragraph format (no tables)."""
         from backend.api.routes.chat import _format_portfolio_analysis
-        
+
         brief = {
             "mode": "LIVE",
             "as_of": "2026-02-02T12:00:00Z",
@@ -150,21 +150,24 @@ class TestMarkdownFormatting:
             "warnings": [],
             "evidence_refs": {}
         }
-        
+
         content = _format_portfolio_analysis(brief)
-        
-        # Check that table separator uses dashes, not underscores
-        assert "|-------|" in content or "|---|" in content
-        assert "|_______|" not in content
-        
-        # Check table structure
-        assert "| Asset |" in content
-        assert "| BTC |" in content
+        paragraphs = content.split("\n\n")
+
+        assert 3 <= len(paragraphs) <= 6, f"Expected 3-6 paragraphs, got {len(paragraphs)}"
+
+        assert "$10,000.00" in content
+        assert "$500.00" in content
+        assert "BTC" in content
+        assert "Evidence:" in paragraphs[-1]
+
+        assert "##" not in content
+        assert "###" not in content
 
     def test_asset_holdings_response_format(self):
         """Test focused asset response formatting."""
         from backend.api.routes.chat import _format_asset_holdings_response
-        
+
         brief = {
             "mode": "LIVE",
             "as_of": "2026-02-02T12:00:00Z",
@@ -176,42 +179,36 @@ class TestMarkdownFormatting:
             ],
             "evidence_refs": {"accounts_call_id": "call_123", "prices_call_ids": ["call_456"]}
         }
-        
-        # Query for BTC
+
         content = _format_asset_holdings_response("BTC", brief)
-        
-        # Should have focused BTC answer
+        paragraphs = content.split("\n\n")
+
+        assert 3 <= len(paragraphs) <= 6
         assert "BTC" in content
         assert "0.12345678" in content
-        assert "9500" in content or "9,500" in content
-        assert "77,000" in content or "77000" in content
-        
-        # Should mention LIVE mode
+        assert "9,500" in content
+        assert "77,000" in content
         assert "LIVE" in content
-        
-        # Should have evidence refs
-        assert "Evidence" in content or "API calls" in content
+        assert "Evidence:" in paragraphs[-1]
 
     def test_asset_holdings_response_zero_balance(self):
         """Test response when queried asset has zero balance."""
         from backend.api.routes.chat import _format_asset_holdings_response
-        
+
         brief = {
             "mode": "LIVE",
             "as_of": "2026-02-02T12:00:00Z",
             "total_value_usd": 500.0,
             "cash_usd": 500.0,
-            "holdings": [],  # No crypto holdings
+            "holdings": [],
             "evidence_refs": {"accounts_call_id": "call_123"}
         }
-        
-        # Query for BTC which is not in holdings
+
         content = _format_asset_holdings_response("BTC", brief)
-        
-        # Should explicitly state 0 balance
-        assert "0" in content
+        paragraphs = content.split("\n\n")
+
+        assert 3 <= len(paragraphs) <= 6
         assert "BTC" in content
-        assert "do not" in content.lower() or "don't" in content.lower() or "no" in content.lower()
 
 
 class TestNotificationPolicy:

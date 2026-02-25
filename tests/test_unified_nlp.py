@@ -2,6 +2,7 @@
 import pytest
 from backend.agents.trade_parser import (
     parse_trade_command,
+    is_missing_amount,
     ParsedTradeCommand,
     CRYPTO_SYMBOLS,
     STOCK_SYMBOLS,
@@ -136,6 +137,14 @@ class TestSideAndAmount:
         """Missing amount should result in None."""
         result = parse_trade_command("Buy BTC")
         assert result.amount_usd is None
+
+    def test_sell_complete_holding_maps_to_all(self):
+        """'Sell my complete holding of MORPHO' should map to ALL mode."""
+        result = parse_trade_command("Sell my complete holding of MORPHO")
+        assert result.side == "sell"
+        assert result.asset == "MORPHO"
+        assert result.amount_mode == "all"
+        assert is_missing_amount(result) is False
 
 
 class TestLookbackPeriod:

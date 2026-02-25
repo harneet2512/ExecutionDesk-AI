@@ -283,6 +283,32 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
             (run_id, json.dumps(decision_artifact))
         )
 
+        # Persist selection_basis artifact for demo observability
+        selection_basis = {
+            "method": f"{lookback_hours}h_{metric}_ranking",
+            "selected_symbol": selected_symbol,
+            "computed_return_7d": top_ranking["score"],
+            "candidates_considered_count": len(rankings),
+            "candidates": [
+                {
+                    "symbol": r["symbol"],
+                    "return_7d": r["score"],
+                    "first_price": r.get("first_price"),
+                    "last_price": r.get("last_price"),
+                    "candles_count": r.get("candles_count", 0),
+                    "skipped_reason": None if r.get("candles_count", 0) >= 2 else "insufficient_candle_data",
+                }
+                for r in rankings[:10]
+            ],
+            "fallback_used": None,
+            "computed_at": now_iso(),
+        }
+        cursor.execute(
+            """INSERT INTO run_artifacts (run_id, step_name, artifact_type, artifact_json)
+               VALUES (?, 'strategy', 'selection_basis', ?)""",
+            (run_id, json.dumps(selection_basis))
+        )
+
         # Update execution plan with selected asset
         execution_plan["selected_asset"] = selected_symbol
         execution_plan["selected_order"] = {

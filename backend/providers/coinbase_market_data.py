@@ -19,8 +19,9 @@ from backend.core.symbols import to_product_id
 
 logger = get_logger(__name__)
 
-# Retry configuration (same as service layer)
-MAX_RETRIES = 3
+# Retry configuration — disabled in pytest to prevent time.sleep() blocking the event loop
+_IN_PYTEST = "pytest" in __import__("sys").modules or "PYTEST_CURRENT_TEST" in os.environ
+MAX_RETRIES = 0 if _IN_PYTEST else 3
 BASE_BACKOFF_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 10.0
 
@@ -114,15 +115,17 @@ class CoinbaseMarketDataProvider(MarketDataProvider):
         }
 
         last_error = None
-        
-        for attempt in range(MAX_RETRIES + 1):
+        import sys as _sys
+        _effective_retries = 0 if ("pytest" in _sys.modules or "PYTEST_CURRENT_TEST" in os.environ) else MAX_RETRIES
+
+        for attempt in range(_effective_retries + 1):
             try:
                 with httpx.Client(timeout=10.0) as client:
                     response = client.get(url, headers=self._get_headers(), params=params)
-                    
+
                     # Handle rate limiting with retry
                     if response.status_code == 429:
-                        if attempt < MAX_RETRIES:
+                        if attempt < _effective_retries:
                             wait_time = min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
                             jitter = random.uniform(0, wait_time * 0.3)
                             total_wait = wait_time + jitter
@@ -130,11 +133,11 @@ class CoinbaseMarketDataProvider(MarketDataProvider):
                             time.sleep(total_wait)
                             continue
                         else:
-                            raise ValueError(f"Rate limited (429) for {symbol} after {MAX_RETRIES} retries")
+                            raise ValueError(f"Rate limited (429) for {symbol} after {_effective_retries} retries")
                     
                     # Handle server errors with retry
                     if response.status_code >= 500:
-                        if attempt < MAX_RETRIES:
+                        if attempt < _effective_retries:
                             wait_time = min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
                             logger.warning(f"Server error ({response.status_code}) for {symbol}, retrying in {wait_time:.2f}s")
                             time.sleep(wait_time)
@@ -142,7 +145,7 @@ class CoinbaseMarketDataProvider(MarketDataProvider):
                         else:
                             logger.error(f"Coinbase API server error for {symbol}: {response.status_code} - {response.text}")
                             raise ValueError(f"Coinbase API server error ({response.status_code}). Error: {response.text}")
-                    
+
                     response.raise_for_status()
                     data = response.json()
 
@@ -167,14 +170,14 @@ class CoinbaseMarketDataProvider(MarketDataProvider):
 
             except httpx.TimeoutException as e:
                 last_error = e
-                if attempt < MAX_RETRIES:
+                if attempt < _effective_retries:
                     wait_time = min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
-                    logger.warning(f"Timeout for {symbol}, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    logger.warning(f"Timeout for {symbol}, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{_effective_retries})")
                     time.sleep(wait_time)
                     continue
                 else:
-                    logger.error(f"Coinbase API timeout for {symbol} after {MAX_RETRIES} retries")
-                    raise ValueError(f"Timeout fetching candles for {symbol} after {MAX_RETRIES} retries")
+                    logger.error(f"Coinbase API timeout for {symbol} after {_effective_retries} retries")
+                    raise ValueError(f"Timeout fetching candles for {symbol} after {_effective_retries} retries")
                     
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500:
@@ -194,33 +197,36 @@ class CoinbaseMarketDataProvider(MarketDataProvider):
 
     def get_price(self, symbol: str) -> float:
         """Get current price from Coinbase Exchange (public, no auth required).
-        
+
         Uses retry with exponential backoff for reliability.
         """
+        import sys as _sys
+        _effective_retries = 0 if ("pytest" in _sys.modules or "PYTEST_CURRENT_TEST" in os.environ) else MAX_RETRIES
+
         product_id = to_product_id(symbol)
         url = f"{self.PUBLIC_URL}/products/{product_id}/ticker"
 
         last_error = None
-        
-        for attempt in range(MAX_RETRIES + 1):
+
+        for attempt in range(_effective_retries + 1):
             try:
                 with httpx.Client(timeout=5.0) as client:
                     response = client.get(url, headers=self._get_headers())
                     
                     # Handle rate limiting with retry
                     if response.status_code == 429:
-                        if attempt < MAX_RETRIES:
+                        if attempt < _effective_retries:
                             wait_time = min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
                             jitter = random.uniform(0, wait_time * 0.3)
                             logger.warning(f"Rate limited (429) for {symbol} price, retrying in {wait_time + jitter:.2f}s")
                             time.sleep(wait_time + jitter)
                             continue
                         else:
-                            raise ValueError(f"Rate limited (429) for {symbol} price after {MAX_RETRIES} retries")
-                    
+                            raise ValueError(f"Rate limited (429) for {symbol} price after {_effective_retries} retries")
+
                     # Handle server errors with retry
                     if response.status_code >= 500:
-                        if attempt < MAX_RETRIES:
+                        if attempt < _effective_retries:
                             wait_time = min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
                             logger.warning(f"Server error ({response.status_code}) for {symbol} price, retrying")
                             time.sleep(wait_time)
@@ -228,20 +234,20 @@ class CoinbaseMarketDataProvider(MarketDataProvider):
                         else:
                             logger.error(f"Coinbase API server error for {symbol}: {response.status_code} - {response.text}")
                             raise ValueError(f"Coinbase API server error ({response.status_code})")
-                    
+
                     response.raise_for_status()
                     data = response.json()
                     return float(data.get("price", 0))
-                    
+
             except httpx.TimeoutException as e:
                 last_error = e
-                if attempt < MAX_RETRIES:
+                if attempt < _effective_retries:
                     wait_time = min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
                     logger.warning(f"Timeout for {symbol} price, retrying in {wait_time:.2f}s")
                     time.sleep(wait_time)
                     continue
                 else:
-                    raise ValueError(f"Timeout getting price for {symbol} after {MAX_RETRIES} retries")
+                    raise ValueError(f"Timeout getting price for {symbol} after {_effective_retries} retries")
                     
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500:

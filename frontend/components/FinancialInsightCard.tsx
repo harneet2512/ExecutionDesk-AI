@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { normalizeAssistantText } from '@/lib/normalizeAssistantText';
 
 // ─── Backend payload shape ───────────────────────────────────────────────────
@@ -16,6 +16,32 @@ interface FinancialInsightRaw {
     };
     generated_by: 'template' | 'llm' | 'hybrid' | 'fallback';
     request_id?: string;
+    news_outcome?: {
+        queries?: string[];
+        lookback?: string;
+        sources?: string[];
+        status?: 'ok' | 'empty' | 'error';
+        reason?: string;
+        items?: number;
+    };
+    impact_summary?: string;
+    current_step_asset?: string;
+    queued_steps_notice?: string;
+    market_headlines?: Array<string | { title: string; sentiment?: string; confidence?: number; driver?: string; rationale?: string; source?: string; url?: string; published_at?: string }>;
+    asset_news_evidence?: EvidencePayload;
+    market_news_evidence?: EvidencePayload | null;
+}
+
+interface EvidencePayload {
+    assets?: string[];
+    queries: string[];
+    lookback: string;
+    sources: string[];
+    status: 'ok' | 'empty' | 'error';
+    items: Array<{ title?: string; source?: string; published_at?: string; url?: string; snippet?: string }>;
+    reason_if_empty_or_error?: string;
+    rationale?: string;
+    artifact_id?: string;
 }
 
 // ─── InsightViewModel ────────────────────────────────────────────────────────
@@ -49,6 +75,7 @@ interface InsightViewModel {
     generatedBy: string;
     dataMissing: Array<{ label: string; reason: string }>;
     isUnavailable: boolean;
+    marketHeadlines: Headline[];
 }
 
 // ─── Mapping function ────────────────────────────────────────────────────────
@@ -144,6 +171,26 @@ function mapInsightToViewModel(raw: FinancialInsightRaw): InsightViewModel {
         }
     }
 
+    const marketHeadlines: Headline[] = [];
+    if (raw.market_headlines) {
+        for (const h of raw.market_headlines.slice(0, 5)) {
+            if (typeof h === 'string') {
+                marketHeadlines.push({ title: h, sentiment: 'neutral', confidence: 0, driver: 'none', rationale: '', source: 'Unknown' });
+            } else {
+                marketHeadlines.push({
+                    title: h.title || '',
+                    sentiment: (h.sentiment === 'bullish' || h.sentiment === 'bearish') ? h.sentiment : 'neutral',
+                    confidence: typeof h.confidence === 'number' ? h.confidence : 0,
+                    driver: h.driver || 'none',
+                    rationale: h.rationale || '',
+                    source: h.source || 'Unknown',
+                    url: h.url,
+                    timeAgo: h.published_at ? formatTimeAgo(h.published_at) : undefined,
+                });
+            }
+        }
+    }
+
     // Data missing detection
     if (raw.risk_flags?.includes('no_candle_data')) {
         dataMissing.push({ label: 'Trend data', reason: 'Candle feed not configured or unavailable' });
@@ -191,6 +238,7 @@ function mapInsightToViewModel(raw: FinancialInsightRaw): InsightViewModel {
         generatedBy: raw.generated_by === 'hybrid' || raw.generated_by === 'llm' ? 'AI-Enhanced' : 'Auto-Generated',
         dataMissing,
         isUnavailable,
+        marketHeadlines,
     };
 }
 
@@ -229,6 +277,43 @@ function confidenceColor(c: number): string {
     return 'theme-elevated theme-text';
 }
 
+function safeHref(url?: string): string | null {
+    if (!url || typeof url !== 'string') return null;
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.toString();
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+function normalizeEvidencePayload(payload: unknown): EvidencePayload | null {
+    if (!payload || typeof payload !== 'object') return null;
+    const p = payload as Partial<EvidencePayload>;
+    if (!Array.isArray(p.queries) || !Array.isArray(p.sources) || !Array.isArray(p.items) || typeof p.lookback !== 'string' || typeof p.status !== 'string') {
+        return null;
+    }
+    const status = (p.status === 'ok' || p.status === 'empty' || p.status === 'error') ? p.status : 'error';
+    return {
+        assets: Array.isArray(p.assets) ? p.assets : undefined,
+        queries: p.queries.map(v => String(v)),
+        lookback: p.lookback,
+        sources: p.sources.map(v => String(v)),
+        status,
+        items: p.items.map((item) => ({
+            title: typeof item?.title === 'string' ? item.title : undefined,
+            source: typeof item?.source === 'string' ? item.source : undefined,
+            published_at: typeof item?.published_at === 'string' ? item.published_at : undefined,
+            url: safeHref(item?.url) ?? undefined,
+            snippet: typeof item?.snippet === 'string' ? item.snippet : undefined,
+        })),
+        reason_if_empty_or_error: typeof p.reason_if_empty_or_error === 'string' ? p.reason_if_empty_or_error : '',
+        rationale: typeof p.rationale === 'string' ? p.rationale : '',
+        artifact_id: typeof p.artifact_id === 'string' ? p.artifact_id : undefined,
+    };
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 interface FinancialInsightCardProps {
     insight: FinancialInsightRaw | null;
@@ -237,10 +322,93 @@ interface FinancialInsightCardProps {
 
 export default function FinancialInsightCard({ insight, newsEnabled = true }: FinancialInsightCardProps) {
     const [showTooltip, setShowTooltip] = useState(false);
+    const [showAll, setShowAll] = useState(false);
+    const [activeEvidence, setActiveEvidence] = useState<'asset' | 'market' | null>(null);
 
-    if (!insight) return null;
+    if (!insight) {
+        if (!newsEnabled) return null;
+        return (
+            <div className="mt-3 p-3 rounded-lg border theme-surface theme-border text-sm">
+                <div className="flex items-center gap-2 theme-text-secondary">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-[var(--color-status-warning)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span>Market insight data unavailable. Confirm or cancel at your discretion.</span>
+                </div>
+            </div>
+        );
+    }
 
     const vm = mapInsightToViewModel(insight);
+    const newsOutcome = insight.news_outcome;
+    const assetEvidence = normalizeEvidencePayload(insight.asset_news_evidence);
+    const marketEvidence = normalizeEvidencePayload(insight.market_news_evidence);
+    const headlineLimit = showAll ? 5 : 3;
+    const assetLabel = insight.current_step_asset || ((assetEvidence?.assets && assetEvidence.assets[0]) || 'Asset');
+    const coverageSources = (newsOutcome?.sources || assetEvidence?.sources || []).join(' + ');
+    const coverageQueries = (newsOutcome?.queries || assetEvidence?.queries || []).join(', ');
+    const coverageLookback = newsOutcome?.lookback || assetEvidence?.lookback || '';
+    const messageLookback = coverageLookback || '24h';
+    const coverageItems = typeof newsOutcome?.items === 'number'
+        ? newsOutcome.items
+        : ((assetEvidence?.items || []).length);
+    const coverageMissingReason = [
+        !coverageSources ? 'sources unavailable' : '',
+        !coverageLookback ? 'lookback unavailable' : '',
+        !coverageQueries ? 'queries unavailable' : '',
+    ].filter(Boolean).join('; ');
+    const debugPreconfirmNews = process.env.NEXT_PUBLIC_DEBUG_PRECONFIRM_NEWS === '1';
+
+    useEffect(() => {
+        if (!debugPreconfirmNews) return;
+        console.info('[PRECONFIRM_NEWS][FinancialInsightCard]', {
+            hasInsight: !!insight,
+            newsEnabled,
+            hasNewsOutcome: !!insight?.news_outcome,
+            hasAssetEvidence: !!assetEvidence,
+            hasMarketEvidence: !!marketEvidence,
+            currentStepAsset: insight?.current_step_asset,
+            assetEvidenceKeys: assetEvidence ? Object.keys(assetEvidence) : [],
+            marketEvidenceKeys: marketEvidence ? Object.keys(marketEvidence) : [],
+        });
+    }, [debugPreconfirmNews, insight, newsEnabled, assetEvidence, marketEvidence]);
+
+    const renderHeadlines = (items: Headline[]) => (
+        <div className="space-y-2">
+            {items.slice(0, headlineLimit).map((h, i) => (
+                <div key={i} className="flex items-start gap-2">
+                    <span className={`shrink-0 mt-1 px-2 py-1 rounded-lg text-xs ${
+                        h.sentiment === 'bullish' ? 'theme-elevated text-[var(--color-status-success)]' :
+                        h.sentiment === 'bearish' ? 'theme-elevated text-[var(--color-status-error)]' :
+                        'theme-elevated theme-text-muted'
+                    }`}>
+                        {h.sentiment === 'bullish' ? '\u2191' : h.sentiment === 'bearish' ? '\u2193' : '\u2212'}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                        <div className="text-xs leading-snug line-clamp-2">
+                            {safeHref(h.url) ? (
+                                <a
+                                    href={safeHref(h.url) || undefined}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[#4a7bc8] hover:text-[#6b9ae8] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)] focus:ring-offset-1 rounded inline-flex items-center gap-1 dark:text-[#7ba3f5] dark:hover:text-[#9bb8f8]"
+                                    title={h.title}
+                                >
+                                    {h.title}
+                                    <span className="opacity-70 text-[10px]" aria-hidden>↗</span>
+                                </a>
+                            ) : (
+                                <span className="theme-text">{h.title}</span>
+                            )}
+                        </div>
+                        <div className="text-xs theme-text-muted flex items-center gap-1 flex-wrap">
+                            <span>{h.source}{h.timeAgo ? ` \u00b7 ${h.timeAgo}` : ''}</span>
+                        </div>
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
 
     if (vm.isUnavailable) {
         return (
@@ -338,14 +506,15 @@ export default function FinancialInsightCard({ insight, newsEnabled = true }: Fi
             )}
 
             {/* News Pulse summary */}
-            {newsEnabled && vm.headlines.length > 0 && (
+            {newsEnabled && (vm.headlines.length > 0 || vm.marketHeadlines.length > 0) && (
                 <div className="border-t theme-border px-3 py-2">
                     <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs font-medium theme-text-muted">News Pulse</span>
                         {(() => {
-                            const bullish = vm.headlines.filter(h => h.sentiment === 'bullish').length;
-                            const bearish = vm.headlines.filter(h => h.sentiment === 'bearish').length;
-                            const neutral = vm.headlines.filter(h => h.sentiment === 'neutral').length;
+                            const combined = [...vm.headlines, ...vm.marketHeadlines];
+                            const bullish = combined.filter(h => h.sentiment === 'bullish').length;
+                            const bearish = combined.filter(h => h.sentiment === 'bearish').length;
+                            const neutral = combined.filter(h => h.sentiment === 'neutral').length;
                             const net = bullish > bearish ? 'Bullish' : bearish > bullish ? 'Bearish' : 'Mixed';
                             const netColor = net === 'Bullish' ? 'text-[var(--color-status-success)]' : net === 'Bearish' ? 'text-[var(--color-status-error)]' : 'theme-text-muted';
                             // Dominant driver: most common non-neutral sentiment
@@ -354,7 +523,7 @@ export default function FinancialInsightCard({ insight, newsEnabled = true }: Fi
                                 <div className="flex items-center gap-2 text-xs flex-wrap">
                                     <span className={`font-semibold ${netColor}`}>{net}</span>
                                     <span className="theme-text-muted">({bullish}&#8593; {bearish}&#8595; {neutral}&#8212;)</span>
-                                    <span className="theme-text-muted">{vm.headlines.length} source{vm.headlines.length !== 1 ? 's' : ''}</span>
+                                    <span className="theme-text-muted">{combined.length} source{combined.length !== 1 ? 's' : ''}</span>
                                     <span className="theme-text-muted">&#183; {vm.confidencePct}% conf</span>
                                     <span className="theme-text-muted">&#183; driver: {dominant}</span>
                                 </div>
@@ -364,101 +533,81 @@ export default function FinancialInsightCard({ insight, newsEnabled = true }: Fi
                 </div>
             )}
 
-            {/* Headlines section */}
+            {/* Smart pre-confirm news section */}
             {newsEnabled && (
                 <div className="border-t theme-border px-3 py-2">
-                    <div className="text-xs font-medium theme-text-muted mb-2">Recent Headlines</div>
+                    <div className="text-xs font-medium theme-text-muted mb-2">{`News (${assetLabel})`}</div>
                     {vm.headlines.length > 0 ? (
-                        <div className="space-y-2">
-                            {vm.headlines.map((h, i) => (
-                                <div key={i} className="flex items-start gap-2">
-                                    <span className={`shrink-0 mt-1 px-2 py-1 rounded-lg text-xs ${
-                                        h.sentiment === 'bullish' ? 'theme-elevated text-[var(--color-status-success)]' :
-                                        h.sentiment === 'bearish' ? 'theme-elevated text-[var(--color-status-error)]' :
-                                        'theme-elevated theme-text-muted'
-                                    }`}>
-                                        {h.sentiment === 'bullish' ? '\u2191' : h.sentiment === 'bearish' ? '\u2193' : '\u2212'}
-                                    </span>
-                                    <div className="flex-1 min-w-0">
-                                        <div className="text-xs leading-snug line-clamp-2">
-                                            {h.url ? (
-                                                <a
-                                                    href={h.url}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="text-[#4a7bc8] hover:text-[#6b9ae8] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)] focus:ring-offset-1 rounded inline-flex items-center gap-1 dark:text-[#7ba3f5] dark:hover:text-[#9bb8f8]"
-                                                    title={h.title}
-                                                >
-                                                    {h.title}
-                                                    <span className="opacity-70 text-[10px]" aria-hidden>↗</span>
-                                                </a>
-                                            ) : (
-                                                <a
-                                                    href={`https://www.google.com/search?q=${encodeURIComponent(h.title)}`}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="text-[#4a7bc8] hover:text-[#6b9ae8] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)] focus:ring-offset-1 rounded inline-flex items-center gap-1 dark:text-[#7ba3f5] dark:hover:text-[#9bb8f8]"
-                                                    title={h.title}
-                                                >
-                                                    {h.title}
-                                                    <span className="opacity-70 text-[10px]" aria-hidden>↗</span>
-                                                </a>
-                                            )}
-                                        </div>
-                                        {/* Grounded rationale: quote from headline justifying sentiment */}
-                                        {h.rationale ? (
-                                            <div className="text-xs theme-text-muted italic">
-                                                {h.sentiment !== 'neutral' ? (
-                                                    <>{h.sentiment === 'bullish' ? 'Positive signal' : 'Risk signal'}: &ldquo;{h.rationale}&rdquo;</>
-                                                ) : (
-                                                    <>&ldquo;{h.rationale}&rdquo;</>
-                                                )}
-                                            </div>
-                                        ) : h.title ? (
-                                            <div className="text-xs theme-text-muted italic">
-                                                &ldquo;{h.title}&rdquo;
-                                            </div>
-                                        ) : null}
-                                        <div className="text-xs theme-text-muted flex items-center gap-1 flex-wrap">
-                                            <span>{h.source}{h.timeAgo ? ` \u00b7 ${h.timeAgo}` : ''}</span>
-                                            {h.confidence > 0 && (
-                                                <span className="px-1 py-1 rounded-lg theme-elevated theme-text-muted">{Math.round(h.confidence * 100)}% conf</span>
-                                            )}
-                                            {h.driver && h.driver !== 'none' && h.driver !== 'mixed' && (
-                                                <span className="px-1 py-1 rounded-lg theme-elevated theme-text-muted">driver: {h.driver}</span>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
+                        renderHeadlines(vm.headlines)
                     ) : (
                         <div className="space-y-2">
                             <div className="text-xs theme-text-secondary flex items-start gap-2">
                                 <span>&#9888;</span>
-                                <span>No recent headlines found for this asset in the last 48h.</span>
+                                <span>
+                                    {newsOutcome?.status === 'error'
+                                        ? `News unavailable for ${assetLabel} right now (provider error).`
+                                        : `No relevant news found for ${assetLabel} in the last ${messageLookback}.`}
+                                </span>
                             </div>
-                            {/* Show diagnostic reason from dataMissing / risk_flags */}
-                            {vm.dataMissing.filter(dm => dm.label === 'Headlines').map((dm, i) => (
-                                <div key={i} className="text-xs theme-text-muted pl-5">
-                                    {dm.reason}
+                            {newsOutcome?.reason && (
+                                <div className="text-xs theme-text-muted pl-5">
+                                    {newsOutcome.reason}
                                 </div>
-                            ))}
-                            <div className="text-xs pl-5 flex items-center gap-2 mt-1">
-                                <button
-                                    onClick={async () => {
-                                        try {
-                                            await fetch('/api/v1/news/ingest', { method: 'POST', headers: { 'X-Dev-Tenant': 't_default' } });
-                                        } catch { /* best-effort */ }
-                                    }}
-                                    className="btn-primary text-xs px-2 py-1 rounded-lg font-medium transition-colors"
-                                >
-                                    Refresh News
-                                </button>
-                                <span className="theme-text-muted">Check RSS/GDELT config or try broader query</span>
-                            </div>
+                            )}
                         </div>
                     )}
+
+                    {vm.marketHeadlines.length > 0 || marketEvidence ? (
+                        <div className="mt-3 border-t theme-border pt-2">
+                            <div className="text-xs font-medium theme-text-muted mb-1">General market news</div>
+                            <div className="text-xs theme-text-secondary mb-2">
+                                {marketEvidence?.rationale || `No asset-specific headlines returned, so I'm showing broader market headlines most likely to impact ${assetLabel}.`}
+                            </div>
+                            {vm.marketHeadlines.length > 0 ? (
+                                renderHeadlines(vm.marketHeadlines)
+                            ) : (
+                                <div className="text-xs theme-text-muted">Market news unavailable right now. Please retry shortly.</div>
+                            )}
+                        </div>
+                    ) : null}
+
+                    <div className="mt-3 text-xs theme-text-secondary">
+                        <span className="font-medium">Impact summary:</span> {insight.impact_summary || 'No headline signal found; decision is based on price/portfolio checks only.'}
+                    </div>
+                    {insight.queued_steps_notice && (
+                        <div className="mt-1 text-xs theme-text-muted">{insight.queued_steps_notice}</div>
+                    )}
+                    <div className="mt-1 text-xs theme-text-muted">
+                        {`Sources: ${coverageSources || 'unavailable'} · Lookback: ${coverageLookback || 'unavailable'} · Queries: ${coverageQueries || 'unavailable'} · Items: ${coverageItems}`}
+                        {coverageMissingReason ? ` (${coverageMissingReason})` : ''}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                        <button
+                            type="button"
+                            disabled={!assetEvidence}
+                            title={assetEvidence ? 'Open asset evidence' : 'Evidence unavailable'}
+                            onClick={() => setActiveEvidence('asset')}
+                            className={`px-2 py-1 rounded-lg text-xs border ${assetEvidence ? 'theme-elevated theme-text border theme-border' : 'theme-elevated theme-text-muted border theme-border opacity-60 cursor-not-allowed'}`}
+                        >
+                            {`News evidence (${assetLabel}, ${messageLookback})`}
+                        </button>
+                        <button
+                            type="button"
+                            disabled={!marketEvidence || (!marketEvidence.artifact_id && marketEvidence.items.length === 0)}
+                            title={marketEvidence ? 'Open market fallback evidence' : 'Evidence unavailable'}
+                            onClick={() => setActiveEvidence('market')}
+                            className={`px-2 py-1 rounded-lg text-xs border ${marketEvidence && (marketEvidence.artifact_id || marketEvidence.items.length > 0) ? 'theme-elevated theme-text border theme-border' : 'theme-elevated theme-text-muted border theme-border opacity-60 cursor-not-allowed'}`}
+                        >
+                            {`Market news evidence (${messageLookback})`}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setShowAll(v => !v)}
+                            className="px-2 py-1 rounded-lg text-xs border theme-border theme-elevated theme-text"
+                        >
+                            {showAll ? 'View less' : 'View details'}
+                        </button>
+                    </div>
                 </div>
             )}
 
@@ -466,6 +615,50 @@ export default function FinancialInsightCard({ insight, newsEnabled = true }: Fi
                 <div className="border-t theme-border px-3 py-2">
                     <div className="text-xs theme-text-muted">
                         News toggle is OFF — headline analysis disabled
+                    </div>
+                </div>
+            )}
+
+            {activeEvidence && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                    <div className="w-[90vw] max-w-3xl rounded-xl border theme-border theme-surface p-4">
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="text-sm font-medium theme-text">
+                                {activeEvidence === 'asset' ? 'Asset news evidence' : 'Market fallback evidence'}
+                            </div>
+                            <button
+                                type="button"
+                                className="text-xs px-2 py-1 rounded-lg border theme-border theme-elevated theme-text"
+                                onClick={() => setActiveEvidence(null)}
+                            >
+                                Close
+                            </button>
+                        </div>
+                        <pre className="text-xs overflow-auto max-h-[50vh] p-2 rounded-lg theme-elevated theme-text-secondary border theme-border">
+                            {JSON.stringify((activeEvidence === 'asset' ? assetEvidence : marketEvidence) || { error: 'Evidence unavailable' }, null, 2)}
+                        </pre>
+                        <div className="mt-2 space-y-1 text-xs">
+                            {((activeEvidence === 'asset' ? assetEvidence?.items : marketEvidence?.items) || [])
+                                .filter(i => !!safeHref(i.url))
+                                .map((item, idx) => (
+                                    <a
+                                        key={idx}
+                                        href={safeHref(item.url) || undefined}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="block text-[#4a7bc8] hover:underline dark:text-[#7ba3f5]"
+                                    >
+                                        {item.title || item.url}
+                                    </a>
+                                ))}
+                            {((activeEvidence === 'asset' ? assetEvidence?.items : marketEvidence?.items) || [])
+                                .filter(i => !safeHref(i.url))
+                                .map((item, idx) => (
+                                    <div key={`nolink-${idx}`} className="theme-text-secondary">
+                                        {item.title || 'Untitled evidence item'}
+                                    </div>
+                                ))}
+                        </div>
                     </div>
                 </div>
             )}

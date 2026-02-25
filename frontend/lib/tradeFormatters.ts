@@ -59,12 +59,16 @@ export function formatTradeOutcome(orderStatus: string | undefined | null): {
   
   switch (status) {
     case 'FILLED':
+      return { text: 'Order filled. You can also confirm in your Coinbase app.', type: 'success' };
     case 'COMPLETED':
-      return { text: 'Trade Executed', type: 'success' };
+      return { text: 'Completed', type: 'success' };
+    case 'PARTIALLY_FILLED':
+      return { text: 'Order partially filled.', type: 'pending' };
     case 'SUBMITTED':
     case 'PENDING':
     case 'OPEN':
-      return { text: 'Order submitted (pending fill confirmation).', type: 'pending' };
+    case 'PENDING_FILL':
+      return { text: 'Order submitted. You can confirm fill in your Coinbase app.', type: 'pending' };
     case 'FAILED':
     case 'REJECTED':
       return { text: 'Trade Failed', type: 'failed' };

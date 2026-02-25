@@ -70,13 +70,15 @@ FINANCE_KEYWORDS = [
 
 TRADE_EXECUTION_KEYWORDS = [
     'buy', 'sell', 'purchase', 'order', 'execute', 'trade',
-    'long', 'short', 'position'
+    'long', 'short', 'position', 'close', 'exit', 'liquidate',
+    'rebalance', 'unwind', 'dump', 'reduce', 'invest', 'allocate'
 ]
 
 PORTFOLIO_KEYWORDS = [
     'portfolio', 'holdings', 'positions', 'allocation', 'exposure',
     'pnl', 'profit and loss', 'performance', 'returns',
-    'diversification', 'risk', 'drawdown'
+    'diversification', 'risk', 'drawdown', 'biggest position',
+    'largest holding', 'top holding'
 ]
 
 # Portfolio analysis patterns - require explicit "analyze" intent
@@ -207,6 +209,17 @@ def has_trade_execution_keywords(text: str) -> bool:
     
     for keyword in TRADE_EXECUTION_KEYWORDS:
         if keyword in normalized:
+            return True
+
+    # Natural-language trade intent patterns that may not include canonical verbs.
+    phrase_patterns = [
+        r'\bget rid of\b',
+        r'\bpick up\b',
+        r'\bput\s+\$?\d+(?:\.\d+)?\s+into\b',
+        r'\bput\s+(?:all|half|\d+%?)\s+.*\s+into\b',
+    ]
+    for pattern in phrase_patterns:
+        if re.search(pattern, normalized):
             return True
     
     return False
@@ -381,7 +394,18 @@ def classify_intent(text: str) -> IntentType:
     if is_holdings_query(text):
         return IntentType.PORTFOLIO_ANALYSIS
     
-    # 6. Check for trade execution (buy/sell orders)
+    # 6. Check for trade execution (buy/sell/close/rebalance orders)
+    # Portfolio references should route to execution when paired with an action.
+    normalized = normalize_text(text)
+    has_portfolio_reference = any(
+        phrase in normalized for phrase in ("biggest position", "largest holding", "top holding")
+    )
+    has_action_verb = any(
+        verb in normalized for verb in ("buy", "sell", "close", "exit", "liquidate", "rebalance", "reduce")
+    )
+    if has_portfolio_reference and has_action_verb:
+        return IntentType.TRADE_EXECUTION
+
     if has_trade_execution_keywords(text):
         return IntentType.TRADE_EXECUTION
 

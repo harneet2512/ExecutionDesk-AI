@@ -1,7 +1,7 @@
 """Approvals API routes."""
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from backend.api.deps import require_trader
+from backend.api.deps import require_trader, require_viewer
 from backend.db.connect import get_conn
 from backend.core.logging import get_logger
 from backend.core.time import now_iso
@@ -89,3 +89,17 @@ async def decision_approval(
         await _emit_event(run_id, "RUN_FAILED", {"error": "User rejected trade proposal", "code": "USER_REJECTED"}, tenant_id=tenant_id)
 
     return {"status": "success", "decision": decision}
+
+
+@router.get("")
+async def list_approvals(user: dict = Depends(require_viewer)):
+    """List pending approvals for the current tenant."""
+    tenant_id = user["tenant_id"]
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM approvals WHERE tenant_id = ? AND status = 'PENDING' ORDER BY created_at DESC",
+            (tenant_id,)
+        )
+        rows = cursor.fetchall()
+    return {"approvals": [dict(r) for r in rows]}

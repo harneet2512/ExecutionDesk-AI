@@ -18,6 +18,10 @@ from backend.db.connect import get_conn
 
 logger = get_logger(__name__)
 
+# DEPRECATED — unrealistically small; see docs/trading_truth_contracts.md INV-3.
+# Retained for backward compatibility. New code uses preflight_engine.
+GENERIC_BASE_MIN_SIZE = "0.00000001"
+
 CATALOG_REFRESH_INTERVAL = 6 * 3600  # 6 hours
 PUBLIC_API_URL = "https://api.exchange.coinbase.com/products"
 REQUEST_TIMEOUT = 15.0
@@ -90,11 +94,14 @@ class ProductCatalogService:
                 )
                 row = cursor.fetchone()
                 if row:
+                    safe_base_min = self._safe_base_min_size(
+                        product_id, row["base_min_size"]
+                    )
                     return CatalogProduct(
                         product_id=row["product_id"],
                         base_currency=row["base_currency"],
                         quote_currency=row["quote_currency"],
-                        base_min_size=row["base_min_size"] or "0.01",
+                        base_min_size=safe_base_min,
                         base_max_size=row["base_max_size"] or "1000000",
                         quote_increment=row["quote_increment"] or "0.01",
                         base_increment=row["base_increment"] or "0.00000001",
@@ -107,6 +114,29 @@ class ProductCatalogService:
         except Exception as e:
             logger.warning("Catalog lookup failed for %s: %s", product_id, str(e)[:120])
             return None
+
+    @staticmethod
+    def _safe_base_min_size(product_id: str, raw_value: Optional[str]) -> str:
+        """Return a safe base_min_size, preferring the DB value when it looks
+        plausible, then product-specific safe defaults, then the generic crypto
+        floor.  Never return a value that equals quote_increment (0.01) for
+        high-value assets like BTC/ETH.
+        """
+        from backend.services.market_metadata import SAFE_FALLBACK_PRECISION
+
+        if raw_value:
+            try:
+                v = float(raw_value)
+                if v > 0:
+                    return raw_value
+            except (ValueError, TypeError):
+                pass
+
+        fb = SAFE_FALLBACK_PRECISION.get(product_id.upper())
+        if fb and fb.get("base_min_size"):
+            return fb["base_min_size"]
+
+        return GENERIC_BASE_MIN_SIZE
 
     def is_tradeable(self, product_id: str) -> bool:
         """Check if a product is tradeable based on the catalog."""

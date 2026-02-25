@@ -30,7 +30,15 @@ def evaluate_execution_quality(run_id: str, tenant_id: str) -> dict:
         orders = cursor.fetchall()
         
         if not orders:
-            return {"score": 1.0, "reasons": ["No filled orders (evaluation skipped)"]}
+            # N/A — fill not confirmed yet; do NOT score as perfect (1.0)
+            return {
+                "score": None,
+                "na": True,
+                "reasons": [
+                    "N/A: No fills confirmed yet. Execution quality is deferred until fill confirmed.",
+                    "Re-run this eval once the order status transitions to FILLED.",
+                ],
+            }
         
         # Get fills
         order_ids = [o["order_id"] for o in orders]

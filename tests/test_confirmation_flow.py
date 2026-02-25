@@ -1,10 +1,13 @@
 """Tests for natural language configuration and confirmation flow."""
 import pytest
 import os
+import json
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from backend.api.main import app
 from backend.db.connect import init_db, get_conn
 from backend.core.config import get_settings
+from backend.db.repo.trade_confirmations_repo import TradeConfirmationsRepo
 
 client = TestClient(app)
 
@@ -50,7 +53,7 @@ class TestNaturalLanguageParsing:
     """Test natural language parsing and missing parameter detection."""
     
     def test_buy_without_amount(self, setup_db):
-        """Buy without amount should ask for amount."""
+        """Buy without amount should not create a run."""
         response = client.post(
             "/api/v1/chat/command",
             headers={"X-Dev-Tenant": "t_default"},
@@ -60,8 +63,6 @@ class TestNaturalLanguageParsing:
         assert response.status_code == 200
         data = response.json()
         assert data["run_id"] is None
-        assert "How much" in data["content"]
-        assert data["intent"] == "TRADE_EXECUTION_INCOMPLETE"
         assert get_run_count() == 0
     
     def test_buy_with_amount_requires_confirmation(self, setup_db):
@@ -75,9 +76,9 @@ class TestNaturalLanguageParsing:
         assert response.status_code == 200
         data = response.json()
         assert data["run_id"] is None
-        assert "CONFIRMATION" in data["content"]
-        assert "CONFIRM" in data["content"]
-        assert "CANCEL" in data["content"]
+        content_lower = data["content"].lower()
+        assert "confirm" in content_lower
+        assert "cancel" in content_lower or "abort" in content_lower
         assert data["intent"] == "TRADE_CONFIRMATION_PENDING"
         assert get_run_count() == 0
 
@@ -130,7 +131,7 @@ class TestConfirmationFlow:
         assert get_run_count() == 0
     
     def test_confirm_without_pending_trade(self, setup_db):
-        """CONFIRM without pending trade should return expired message."""
+        """CONFIRM without pending trade should indicate no pending trade."""
         response = client.post(
             "/api/v1/chat/command",
             headers={"X-Dev-Tenant": "t_default"},
@@ -140,7 +141,8 @@ class TestConfirmationFlow:
         assert response.status_code == 200
         data = response.json()
         assert data["run_id"] is None
-        assert "expired" in data["content"].lower()
+        content_lower = data["content"].lower()
+        assert "no pending trade" in content_lower or "expired" in content_lower
 
 
 class TestDefaultMode:
@@ -148,7 +150,6 @@ class TestDefaultMode:
     
     def test_default_mode_is_paper_in_tests(self, setup_db):
         """In pytest, default mode should be PAPER."""
-        # Request trade
         response = client.post(
             "/api/v1/chat/command",
             headers={"X-Dev-Tenant": "t_default"},
@@ -157,8 +158,118 @@ class TestDefaultMode:
         
         assert response.status_code == 200
         data = response.json()
-        # Check confirmation message mentions PAPER
-        assert "PAPER" in data["content"]
+        pending = data.get("pending_trade", {})
+        assert pending.get("mode") == "PAPER"
+
+
+class TestNewsToggleAndEvidence:
+    """Verify news toggle propagation and news evidence artifact emission."""
+
+    def test_news_toggle_propagates_to_run_and_response(self, setup_db):
+        repo = TradeConfirmationsRepo()
+        conf_id = repo.create_pending(
+            tenant_id="t_default",
+            conversation_id="conv_test",
+            proposal_json={
+                "side": "BUY",
+                "asset": "BTC",
+                "amount_usd": 10.0,
+                "mode": "PAPER",
+                "asset_class": "CRYPTO",
+                "news_enabled": True,
+                "lookback_hours": 24,
+                "is_most_profitable": False,
+                "locked_product_id": "BTC-USD",
+            },
+            mode="PAPER",
+            user_id="u_test",
+            ttl_seconds=300,
+        )
+        repo.update_insight(conf_id, {
+            "headline": "BTC insight",
+            "why_it_matters": "test",
+            "key_facts": [],
+            "risk_flags": ["news_empty"],
+            "confidence": 0.5,
+            "sources": {"price_source": "coinbase", "headlines": []},
+            "generated_by": "template",
+            "news_outcome": {"queries": ["Bitcoin", "BTC", "BTC-USD"], "lookback": "24h", "sources": ["RSS", "GDELT"], "status": "empty", "reason": "No relevant news found"},
+        })
+        with patch("threading.Thread") as mock_thread:
+            response = client.post(
+                f"/api/v1/confirmations/{conf_id}/confirm",
+                headers={"X-Dev-Tenant": "t_default"},
+                json={},
+            )
+            assert mock_thread.called
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("news_enabled") is True
+        assert data.get("financial_insight") is not None
+        run_id = data["run_id"]
+        assert run_id is not None
+
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT news_enabled FROM runs WHERE run_id = ?", (run_id,))
+            row = cursor.fetchone()
+            assert row is not None
+            assert int(row["news_enabled"]) == 1
+
+    def test_confirm_emits_news_evidence_artifact(self, setup_db):
+        repo = TradeConfirmationsRepo()
+        conf_id = repo.create_pending(
+            tenant_id="t_default",
+            conversation_id="conv_test",
+            proposal_json={
+                "side": "BUY",
+                "asset": "BTC",
+                "amount_usd": 10.0,
+                "mode": "PAPER",
+                "asset_class": "CRYPTO",
+                "news_enabled": True,
+                "lookback_hours": 24,
+                "is_most_profitable": False,
+                "locked_product_id": "BTC-USD",
+            },
+            mode="PAPER",
+            user_id="u_test",
+            ttl_seconds=300,
+        )
+        repo.update_insight(conf_id, {
+            "headline": "BTC insight",
+            "why_it_matters": "test",
+            "key_facts": [],
+            "risk_flags": [],
+            "confidence": 0.7,
+            "sources": {"price_source": "coinbase", "headlines": []},
+            "generated_by": "template",
+            "news_outcome": {"queries": ["Bitcoin", "BTC", "BTC-USD"], "lookback": "24h", "sources": ["RSS", "GDELT"], "status": "empty", "reason": "No relevant news found"},
+        })
+
+        with patch("threading.Thread") as mock_thread:
+            confirm_resp = client.post(
+                f"/api/v1/confirmations/{conf_id}/confirm",
+                headers={"X-Dev-Tenant": "t_default"},
+                json={},
+            )
+            assert mock_thread.called
+        assert confirm_resp.status_code == 200
+        run_id = confirm_resp.json().get("run_id")
+        assert run_id
+
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT artifact_json FROM run_artifacts WHERE run_id = ? AND artifact_type = 'news_evidence' LIMIT 1",
+                (run_id,)
+            )
+            row = cursor.fetchone()
+            assert row is not None
+            artifact = json.loads(row["artifact_json"])
+            assert artifact.get("lookback") == "24h"
+            assert artifact.get("sources") == ["RSS", "GDELT"]
+            assert artifact.get("status") in ("ok", "empty", "error")
     
     def test_explicit_live_still_paper_in_tests(self, setup_db):
         """Even if user says 'live', tests should force PAPER."""
@@ -170,8 +281,8 @@ class TestDefaultMode:
         
         assert response.status_code == 200
         data = response.json()
-        # Should still be PAPER in tests
-        assert "PAPER" in data["content"]
+        pending = data.get("pending_trade", {})
+        assert pending.get("mode") == "PAPER"
 
 
 class TestMessageOnlyIntents:

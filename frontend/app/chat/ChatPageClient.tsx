@@ -28,6 +28,7 @@ import ChatEmptyState from '@/components/ChatEmptyState';
 import ChatHeader from '@/components/ChatHeader';
 import StepsDrawer, { Step } from '@/components/StepsDrawer';
 import MarkdownMessage from '@/components/MarkdownMessage';
+import NarrativeLines from '@/components/NarrativeLines';
 import NewsToggle from '@/components/NewsToggle';
 import NewsBriefCard from '@/components/NewsBriefCard';
 import OrderTicketCard from '@/components/OrderTicketCard';
@@ -45,7 +46,7 @@ function stripInternalIds(content: string): string {
   return content
     .replace(/\brun_[a-zA-Z0-9_-]{8,}\b/g, '')
     .replace(/\bconf_[a-zA-Z0-9_-]{8,}\b/g, '')
-    .replace(/\s{2,}/g, ' ')
+    .replace(/[^\S\n]{2,}/g, ' ')
     .trim();
 }
 
@@ -63,6 +64,8 @@ export default function ChatPageClient() {
   const [steps, setSteps] = useState<Step[]>([]);
   const [stepsDrawerOpen, setStepsDrawerOpen] = useState(false);
   const [newsEnabled, setNewsEnabled] = useState(true);
+  const debugPreconfirmNews = process.env.NEXT_PUBLIC_DEBUG_PRECONFIRM_NEWS === '1';
+  const debugRender = process.env.NEXT_PUBLIC_DEBUG_RENDER === '1';
   const [currentTicket, setCurrentTicket] = useState<TradeTicket | null>(null);
   const [currentStepName, setCurrentStepName] = useState<string | null>(null);
   const [runStartTime, setRunStartTime] = useState<number | null>(null);
@@ -103,6 +106,47 @@ export default function ChatPageClient() {
   useEffect(() => { completedRunsRef.current = completedRuns; }, [completedRuns]);
   useEffect(() => { runIntentsRef.current = runIntents; }, [runIntents]);
 
+  const getPortfolioSnapshotCardData = (msg: Message): any | null => (
+    msg.metadata_json?.portfolio_snapshot_card_data ||
+    msg.metadata_json?.portfolio_brief ||
+    null
+  );
+
+  // Diagnose-first runtime evidence: branch + payload shape per message.
+  useEffect(() => {
+    if (!debugRender) return;
+    messages.forEach((msg, idx) => {
+      const intent = msg.metadata_json?.intent || (msg.run_id ? runIntents[msg.run_id] : undefined);
+      const hasPortfolioSnapshotCardData = !!getPortfolioSnapshotCardData(msg);
+      const hasTradeConfirmation = intent === 'TRADE_CONFIRMATION_PENDING';
+      const hasPreconfirmInsight = !!(msg.metadata_json?.preconfirm_insight || msg.metadata_json?.financial_insight);
+      const isPortfolioAnalysis = intent === 'PORTFOLIO_ANALYSIS' || hasPortfolioSnapshotCardData;
+      const rendererBranch = hasTradeConfirmation
+        ? 'trade_confirmation_pending'
+        : isPortfolioAnalysis
+          ? 'portfolio_analysis'
+          : msg.run_id
+            ? 'run_artifacts'
+            : 'narrative_only';
+      console.info('[CHAT_RENDER_DEBUG][message]', {
+        index: idx,
+        message_id: msg.message_id,
+        role: msg.role,
+        run_id: msg.run_id || null,
+        kind: msg.role,
+        type: msg.metadata_json?.status || null,
+        intent,
+        status: msg.metadata_json?.status || null,
+        metadata_keys: msg.metadata_json ? Object.keys(msg.metadata_json) : [],
+        hasPortfolioSnapshotCardData,
+        hasTradeConfirmation,
+        hasPreconfirmInsight,
+        newsEnabled: msg.metadata_json?.news_enabled ?? newsEnabled,
+        rendererBranch,
+      });
+    });
+  }, [debugRender, messages, runIntents, newsEnabled]);
+
   // Health check + capabilities: gate all API calls on backend health
   useEffect(() => {
     (async () => {
@@ -126,28 +170,36 @@ export default function ChatPageClient() {
 
   // Load conversation when param changes (only if health is OK)
   // Uses refs for health gate to avoid re-firing when health state changes.
+  // AbortController cancels stale fetches when the user rapidly switches conversations.
   useEffect(() => {
     if (!conversationParam) return;
-    if (healthCheckedRef.current && !healthOkRef.current) return; // Block when unhealthy
+    if (healthCheckedRef.current && !healthOkRef.current) return;
+
+    const abortController = new AbortController();
+
     setCurrentConversationId(conversationParam);
+    setMessages([]);
+    setCurrentRunId(null);
+    setSteps([]);
+    setActedConfirmations(new Set());
+    setCompletedRuns({});
+    setConversationTitle('New Conversation');
 
     (async () => {
       try {
-        await loadConversation(conversationParam);
-        await loadMessages(conversationParam);
+        await Promise.all([
+          loadConversation(conversationParam),
+          loadMessages(conversationParam),
+        ]);
       } catch (e: any) {
+        if (abortController.signal.aborted) return;
         const is404 = e?.statusCode === 404 || e?.message?.includes('404');
         if (is404 && !recoveryAttemptedRef.current) {
           recoveryAttemptedRef.current = true;
           console.warn('[ChatPage] Conversation not found, creating new one');
-          setMessages([]);
-          setCurrentRunId(null);
-          setSteps([]);
-          setActedConfirmations(new Set());
-          setCompletedRuns({});
-          setConversationTitle('New Conversation');
           try {
             const conv = await createConversation();
+            if (abortController.signal.aborted) return;
             setCurrentConversationId(conv.conversation_id);
             router.replace(`/chat?conversation=${conv.conversation_id}`);
           } catch (createErr) {
@@ -158,6 +210,8 @@ export default function ChatPageClient() {
         }
       }
     })();
+
+    return () => { abortController.abort(); };
   }, [conversationParam]);
 
   // Load conversation details (throws on 404 so parent useEffect can handle recovery)
@@ -715,6 +769,21 @@ export default function ChatPageClient() {
 
       // Execute command (natural language only)
       const result = await executeChatCommand(userMessageText, convId, newsEnabled);
+      const preconfirmInsight = result?.preconfirm_insight || result?.financial_insight || null;
+      const portfolioSnapshotCardData = result?.portfolio_snapshot_card_data || result?.portfolio_brief || null;
+      if (debugPreconfirmNews) {
+        console.info('[PRECONFIRM_NEWS][chat_command_result]', {
+          intent: result?.intent,
+          status: result?.status,
+          news_enabled: result?.news_enabled,
+          has_preconfirm_insight: !!preconfirmInsight,
+          preconfirm_insight_keys: preconfirmInsight ? Object.keys(preconfirmInsight) : [],
+          pending_trade_asset: result?.pending_trade?.asset,
+          confirmation_id: result?.confirmation_id,
+          has_portfolio_snapshot_card_data: !!portfolioSnapshotCardData,
+          portfolio_snapshot_card_data_keys: portfolioSnapshotCardData ? Object.keys(portfolioSnapshotCardData) : [],
+        });
+      }
 
       // CRITICAL: Check if run_id exists before treating as run-based response
       if (result.run_id) {
@@ -738,14 +807,18 @@ export default function ChatPageClient() {
           // Completed synchronously - display final content immediately
           // Generate client_message_id for assistant message deduplication
           const assistantClientId = crypto.randomUUID();
+          const completedMeta: Record<string, any> = { intent: result.intent, status: result.status, client_message_id: assistantClientId };
+          if (result.narrative_structured) completedMeta.narrative_structured = result.narrative_structured;
+          if (portfolioSnapshotCardData) {
+            completedMeta.portfolio_snapshot_card_data = portfolioSnapshotCardData;
+          }
           await createMessage(
             convId,
             result.content,
             'assistant',
             result.run_id,
-            { intent: result.intent, status: result.status, client_message_id: assistantClientId }
+            completedMeta,
           );
-          // Optimistically add assistant message to UI (no loadMessagesDebounced needed)
           setMessages(prev => [...prev, {
             message_id: 'opt_' + Date.now(),
             conversation_id: convId || '',
@@ -753,7 +826,7 @@ export default function ChatPageClient() {
             content: result.content,
             run_id: result.run_id,
             created_at: new Date().toISOString(),
-            metadata_json: { intent: result.intent, status: result.status, client_message_id: assistantClientId },
+            metadata_json: completedMeta,
           }]);
           setLoading(false);
         } else {
@@ -795,14 +868,17 @@ export default function ChatPageClient() {
           {
             intent: result.intent,
             status: result.status,
+            news_enabled: result.news_enabled ?? newsEnabled,
             confirmation_id: result.confirmation_id,
             pending_trade: result.pending_trade,
-            financial_insight: result.financial_insight || undefined,
+            preconfirm_insight: preconfirmInsight || undefined,
+            financial_insight: preconfirmInsight || undefined,
+            portfolio_snapshot_card_data: portfolioSnapshotCardData || undefined,
             selection_result: result.selection_result || undefined,
+            narrative_structured: result.narrative_structured || undefined,
             client_message_id: assistantClientId
           }
         );
-        // Optimistically add assistant message to UI (no loadMessagesDebounced needed)
         setMessages(prev => [...prev, {
           message_id: 'opt_' + Date.now(),
           conversation_id: convId || '',
@@ -812,10 +888,14 @@ export default function ChatPageClient() {
           metadata_json: {
             intent: result.intent,
             status: result.status,
+            news_enabled: result.news_enabled ?? newsEnabled,
             confirmation_id: result.confirmation_id,
             pending_trade: result.pending_trade,
-            financial_insight: result.financial_insight || undefined,
+            preconfirm_insight: preconfirmInsight || undefined,
+            financial_insight: preconfirmInsight || undefined,
+            portfolio_snapshot_card_data: portfolioSnapshotCardData || undefined,
             selection_result: result.selection_result || undefined,
+            narrative_structured: result.narrative_structured || undefined,
             client_message_id: assistantClientId
           },
         }]);
@@ -1030,10 +1110,12 @@ export default function ChatPageClient() {
                           : 'theme-elevated theme-text'
                           }`}
                       >
-                        {/* Render markdown for assistant messages, plain text for user */}
-                        {/* P3.3: Strip internal IDs (run_id, conf_id) from displayed content */}
                         {msg.role === 'assistant' ? (
-                          <MarkdownMessage content={stripInternalIds(msg.content)} className="text-sm" />
+                          msg.metadata_json?.narrative_structured ? (
+                            <NarrativeLines structured={msg.metadata_json.narrative_structured} fallbackContent={stripInternalIds(msg.content)} className="text-sm" />
+                          ) : (
+                            <MarkdownMessage content={stripInternalIds(msg.content)} className="text-sm" />
+                          )
                         ) : (
                           <div className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</div>
                         )}
@@ -1041,6 +1123,22 @@ export default function ChatPageClient() {
                         {/* Confirmation Card (hidden after user confirms/cancels) */}
                         {msg.role === 'assistant' && msg.metadata_json?.intent === 'TRADE_CONFIRMATION_PENDING' && !actedConfirmations.has(msg.metadata_json?.confirmation_id) && (
                           <div className="mt-4 p-4 theme-surface rounded-xl border theme-border-strong shadow-sm">
+                            {(() => {
+                              const preconfirmInsight = msg.metadata_json?.preconfirm_insight || msg.metadata_json?.financial_insight || null;
+                              if (debugPreconfirmNews) {
+                                console.info('[PRECONFIRM_NEWS][staged_card_message]', {
+                                  message_id: msg.message_id,
+                                  role: msg.role,
+                                  status: msg.metadata_json?.status,
+                                  intent: msg.metadata_json?.intent,
+                                  news_enabled: msg.metadata_json?.news_enabled,
+                                  metadata_keys: msg.metadata_json ? Object.keys(msg.metadata_json) : [],
+                                  has_preconfirm_insight: !!preconfirmInsight,
+                                  preconfirm_insight_keys: preconfirmInsight ? Object.keys(preconfirmInsight) : [],
+                                });
+                              }
+                              return null;
+                            })()}
                             <p className="text-sm font-medium mb-3 theme-text">
                               Action Required
                             </p>
@@ -1050,26 +1148,22 @@ export default function ChatPageClient() {
                                 <SelectionPanel selection={msg.metadata_json.selection_result as SelectionData} />
                               </div>
                             )}
-                            {/* Financial Insight Card */}
-                            {msg.metadata_json?.financial_insight && (
-                              <div className="mb-3">
-                                <FinancialInsightCard insight={msg.metadata_json.financial_insight} newsEnabled={newsEnabled} />
-                              </div>
-                            )}
+                            {/* Financial Insight Card — always rendered when news enabled (INV-7). */}
+                            <div className="mb-3">
+                              <FinancialInsightCard
+                                insight={(msg.metadata_json?.preconfirm_insight || msg.metadata_json?.financial_insight) || null}
+                                newsEnabled={msg.metadata_json?.news_enabled ?? newsEnabled}
+                              />
+                            </div>
                             {/* LIVE-disabled defense: block LIVE confirmation entirely */}
                             {msg.metadata_json?.pending_trade?.mode === 'LIVE' && (capabilities?.live_trading_enabled === false || healthStatus?.config?.live_execution_allowed === false) ? (
-                              <div className="mb-3 p-4 bg-[var(--color-status-warning-bg)] border border-[var(--color-status-warning)]/20 rounded-lg">
-                                <p className="text-sm font-semibold text-[var(--color-status-warning)] mb-2">
-                                  LIVE Trading Disabled
+                              <div className="mb-3 px-3 py-2 bg-[var(--color-status-warning-bg)] border border-[var(--color-status-warning)]/20 rounded-lg">
+                                <p className="text-xs font-semibold text-[var(--color-status-warning)]">Confirmation required</p>
+                                <p className="text-sm text-[var(--color-status-warning)] leading-snug">
+                                  To execute this LIVE trade, confirm it in your Coinbase wallet.
                                 </p>
-                                <p className="text-xs text-[var(--color-status-warning)] mb-3">
-                                  This confirmation was created for LIVE execution, but LIVE trading is currently disabled. The trade cannot proceed in LIVE mode.
-                                </p>
-                                <p className="text-xs text-[var(--color-status-warning)] mb-3">
-                                  {capabilities?.remediation || 'Set TRADING_DISABLE_LIVE=false and ENABLE_LIVE_TRADING=true in your environment, then restart the backend.'}
-                                </p>
-                                <p className="text-xs theme-text-muted">
-                                  To trade in PAPER mode, submit a new trade request (it will automatically use PAPER mode).
+                                <p className="text-xs theme-text-muted leading-snug">
+                                  No funds move until you confirm.
                                 </p>
                               </div>
                             ) : (
@@ -1114,8 +1208,12 @@ export default function ChatPageClient() {
                                             intent: res.intent || 'TRADE_EXECUTION',
                                             status: 'EXECUTING'
                                           };
-                                          if (msg.metadata_json?.financial_insight) {
-                                            executionMetadata.financial_insight = msg.metadata_json.financial_insight;
+                                          const msgPreconfirmInsight =
+                                            msg.metadata_json?.preconfirm_insight ||
+                                            msg.metadata_json?.financial_insight;
+                                          if (msgPreconfirmInsight) {
+                                            executionMetadata.preconfirm_insight = msgPreconfirmInsight;
+                                            executionMetadata.financial_insight = msgPreconfirmInsight;
                                           }
 
                                           await createMessage(
@@ -1267,21 +1365,55 @@ export default function ChatPageClient() {
                           </div>
                         )}
 
+                        {msg.role === 'assistant' && !msg.run_id && (() => {
+                          const intent = msg.metadata_json?.intent;
+                          const snapshotCardData = getPortfolioSnapshotCardData(msg);
+                          const isPortfolioAnalysisResult =
+                            intent === 'PORTFOLIO_ANALYSIS' ||
+                            (!!snapshotCardData && intent !== 'TRADE_CONFIRMATION_PENDING');
+                          if (!isPortfolioAnalysisResult || !snapshotCardData) return null;
+                          return (
+                            <div className="mt-3 pt-3 border-t theme-border">
+                              <PortfolioCard runId={`inline_${msg.message_id}`} brief={snapshotCardData} />
+                              {(msg.metadata_json?.preconfirm_insight || msg.metadata_json?.financial_insight) && (
+                                <div className="mt-3">
+                                  <FinancialInsightCard insight={(msg.metadata_json?.preconfirm_insight || msg.metadata_json?.financial_insight)} newsEnabled={newsEnabled} />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+
                         {msg.run_id && msg.role === 'assistant' && shouldRenderCard && (() => {
                           // Determine intent from metadata or runIntents state
                           const intent = msg.metadata_json?.intent || runIntents[msg.run_id];
-                          const isTradeRun = intent === 'TRADE_EXECUTION' ||
-                            intent === 'TRADE_CONFIRMATION_PENDING' ||
+                          const snapshotCardData = getPortfolioSnapshotCardData(msg);
+                          const isTradeConfirmationPending = intent === 'TRADE_CONFIRMATION_PENDING';
+                          const isPortfolioRun = !isTradeConfirmationPending && (
+                            intent === 'PORTFOLIO_ANALYSIS' ||
+                            intent === 'PORTFOLIO' ||
+                            !!snapshotCardData ||
+                            msg.content?.includes('Portfolio Snapshot') ||
+                            msg.content?.includes('Total Value:')
+                          );
+                          const isTradeRun = !isPortfolioRun && (intent === 'TRADE_EXECUTION' ||
                             msg.content?.includes('Executing') ||
                             (msg.content?.includes('SELL') && msg.content?.includes('$')) ||
-                            (msg.content?.includes('BUY') && msg.content?.includes('$'));
+                            (msg.content?.includes('BUY') && msg.content?.includes('$')));
 
-                          const isPortfolioRun = intent === 'PORTFOLIO' ||
-                            intent === 'PORTFOLIO_ANALYSIS' ||
-                            msg.content?.includes('Portfolio Snapshot') ||
-                            msg.content?.includes('Total Value:');
-
-                          if (isTradeRun) {
+                          if (isPortfolioRun) {
+                            // Portfolio analysis result: snapshot card is always primary.
+                            return (
+                              <div className="mt-3 pt-3 border-t theme-border">
+                                <PortfolioCard runId={msg.run_id} brief={snapshotCardData || undefined} />
+                                {(msg.metadata_json?.preconfirm_insight || msg.metadata_json?.financial_insight) && (
+                                  <div className="mt-3">
+                                    <FinancialInsightCard insight={(msg.metadata_json?.preconfirm_insight || msg.metadata_json?.financial_insight)} newsEnabled={newsEnabled} />
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          } else if (isTradeRun) {
                             // For trade runs: show processing card if executing, receipt when terminal
                             const msgStatus = msg.metadata_json?.status || '';
                             const isExecuting = msgStatus === 'EXECUTING' || msg.content?.includes('Executing');
@@ -1297,9 +1429,9 @@ export default function ChatPageClient() {
                             return (
                               <div className="mt-3 pt-3 border-t theme-border">
                                 {/* Show financial insight if available (persisted from confirmation) */}
-                                {msg.metadata_json?.financial_insight && (
+                                {(msg.metadata_json?.preconfirm_insight || msg.metadata_json?.financial_insight) && (
                                   <div className="mb-3">
-                                    <FinancialInsightCard insight={msg.metadata_json.financial_insight} newsEnabled={newsEnabled} />
+                                    <FinancialInsightCard insight={(msg.metadata_json?.preconfirm_insight || msg.metadata_json?.financial_insight)} newsEnabled={newsEnabled} />
                                   </div>
                                 )}
                                 <TradeProcessingCard
@@ -1346,13 +1478,6 @@ export default function ChatPageClient() {
                                 />
                                 {/* Show receipt below once complete */}
                                 <TradeReceipt runId={msg.run_id} status={completedRuns[msg.run_id!]} />
-                              </div>
-                            );
-                          } else if (isPortfolioRun) {
-                            // For portfolio runs: show PortfolioCard
-                            return (
-                              <div className="mt-3 pt-3 border-t theme-border">
-                                <PortfolioCard runId={msg.run_id} />
                               </div>
                             );
                           } else {

@@ -1,5 +1,7 @@
 """Chat command API endpoint with natural language parsing and confirmation flow."""
+import asyncio
 import json
+import os
 import re
 import traceback
 import uuid
@@ -15,6 +17,8 @@ from backend.core.logging import get_logger
 from backend.core.ids import new_id
 
 logger = get_logger(__name__)
+DEBUG_PRECONFIRM_NEWS = os.getenv("DEBUG_PRECONFIRM_NEWS", "0").lower() in ("1", "true", "yes")
+DEBUG_TRADE_DIAGNOSTICS = os.getenv("DEBUG_TRADE_DIAGNOSTICS", "0").lower() in ("1", "true", "yes")
 
 
 def _safe_json_loads(s, default=None):
@@ -29,341 +33,258 @@ def _safe_json_loads(s, default=None):
 router = APIRouter()
 
 
+def _fetch_executable_state(tenant_id: str):
+    from backend.services.executable_state import fetch_executable_state
+
+    return fetch_executable_state(tenant_id)
+
+
+def _build_product_catalog(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    from backend.services.product_catalog import get_product_catalog
+
+    catalog = get_product_catalog()
+    out: Dict[str, Dict[str, Any]] = {}
+    for sym in symbols:
+        s = (sym or "").upper().strip()
+        if not s:
+            continue
+        for pid in (f"{s}-USD", f"{s}-USDC"):
+            product = catalog.get_product(pid)
+            if not product:
+                continue
+            out[pid] = {
+                "trading_disabled": bool(getattr(product, "trading_disabled", False)),
+                "is_disabled": str(getattr(product, "status", "online")).lower() != "online",
+                "limit_only": False,
+                "cancel_only": False,
+            }
+    return out
+
+
 def _format_portfolio_analysis(brief: Dict[str, Any]) -> str:
-    """Format PortfolioBrief into clean, professional output for chat display.
-    
-    Design principles:
-    - No markdown tables (render poorly in chat)
-    - No emojis (unprofessional for enterprise)
-    - Max 5 holdings shown
-    - Clean, scannable structure
-    - No internal error details
+    """Format PortfolioBrief into a strict 5-line narrative."""
+    from backend.agents.narrative import format_portfolio_narrative
+    return format_portfolio_narrative(brief)
+
+
+async def _resolve_amount_from_portfolio(
+    tenant_id: str,
+    parsed_commands: List[Any],
+    executable_state: Any = None,
+) -> Dict[str, Any]:
     """
-    lines = []
-    
-    # Header with mode and timestamp
-    mode = brief.get("mode", "UNKNOWN")
-    # Handle both string and enum values
-    if hasattr(mode, 'value'):
-        mode = mode.value
-    mode_str = str(mode).replace("ExecutionMode.", "").upper()
-    
-    as_of = brief.get("as_of", "")
-    # Parse and format timestamp cleanly
-    try:
-        from datetime import datetime
-        ts = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
-        as_of_display = ts.strftime("%b %d, %Y %H:%M UTC")
-    except:
-        as_of_display = as_of
-    
-    lines.append("**Portfolio Snapshot**")
-    lines.append(f"Mode: {mode_str} | As of: {as_of_display}")
-    lines.append("")
-    
-    # Key metrics
-    total_value = brief.get("total_value_usd", 0)
-    cash = brief.get("cash_usd", 0)
-    lines.append(f"Total Value: **${total_value:,.2f}**")
-    lines.append(f"Cash: ${cash:,.2f}")
-    lines.append("")
-    
-    # Top holdings (max 5, as simple list)
-    holdings = brief.get("holdings", [])
-    if holdings:
-        lines.append("**Top Holdings**")
-        for h in holdings[:5]:
-            symbol = h.get("asset_symbol", "?")
-            qty = h.get("qty", 0)
-            usd = h.get("usd_value", 0)
-            price = h.get("current_price")
-            price_str = f"@ ${price:,.2f}" if price else ""
-            lines.append(f"  {symbol}: {qty:,.6f} (${usd:,.2f}) {price_str}".strip())
-        if len(holdings) > 5:
-            lines.append(f"  ... and {len(holdings) - 5} more")
-        lines.append("")
-    
-    # Allocation summary (condensed)
-    allocation = brief.get("allocation", [])
-    if allocation:
-        lines.append("**Allocation**")
-        for a in allocation[:5]:
-            symbol = a.get("asset_symbol", "?")
-            pct = a.get("pct", 0)
-            lines.append(f"  {symbol}: {pct:.1f}%")
-        lines.append("")
-    
-    # Risk summary (short bullets, no exaggeration)
-    risk = brief.get("risk", {})
-    if risk:
-        risk_level = risk.get("risk_level", "UNKNOWN")
-        # Use cleaner risk level labels
-        risk_labels = {
-            "VERY_HIGH": "High concentration",
-            "HIGH": "Concentrated",
-            "MEDIUM": "Moderately diversified",
-            "LOW": "Well diversified",
-            "UNKNOWN": "Unable to assess"
-        }
-        risk_label = risk_labels.get(risk_level, risk_level)
-        
-        lines.append("**Risk**")
-        lines.append(f"  Status: {risk_label}")
-        
-        top1 = risk.get("concentration_pct_top1", 0)
-        if top1 > 0:
-            lines.append(f"  Largest position: {top1:.0f}% of portfolio")
-        
-        div_score = risk.get("diversification_score")
-        if div_score is not None:
-            lines.append(f"  Diversification: {div_score:.2f}/1.00")
-        lines.append("")
-    
-    # Recommendations (max 3, no icons)
-    recommendations = brief.get("recommendations", [])
-    if recommendations:
-        lines.append("**Recommendations**")
-        for rec in recommendations[:3]:
-            title = rec.get("title", "")
-            desc = rec.get("description", "")
-            lines.append(f"  {title}")
-            if desc:
-                lines.append(f"    {desc}")
-        lines.append("")
-    
-    # Warnings (filtered, no internal errors)
-    warnings = brief.get("warnings", [])
-    # Filter out any warnings that look like internal errors
-    clean_warnings = [
-        w for w in warnings 
-        if not any(x in str(w).lower() for x in ["name '", "traceback", "exception", "error:"])
-    ]
-    if clean_warnings:
-        lines.append("**Notes**")
-        for w in clean_warnings[:3]:
-            lines.append(f"  {w}")
-        lines.append("")
-    
-    # Data sources (clean wording)
-    evidence = brief.get("evidence_refs", {})
-    evidence_count = 0
-    if evidence.get("accounts_call_id"):
-        evidence_count += 1
-    evidence_count += len(evidence.get("prices_call_ids", []))
-    if evidence.get("orders_call_id"):
-        evidence_count += 1
-    
-    if evidence_count > 0:
-        source_word = "source" if evidence_count == 1 else "sources"
-        lines.append(f"Data: {evidence_count} {source_word} queried. Full evidence in run artifacts.")
-    
-    return "\n".join(lines)
+    Resolve derivable command fields from latest state.
+
+    Resolves:
+    - Portfolio references (largest holding)
+    - amount_mode=ALL/PERCENT/QUANTITY/TARGET_ALLOC into amount_usd
+    - SELL sizing from executable balances (available_qty), not snapshot qty
+    """
+    from backend.agents.trade_parser import AmountMode
+    from backend.services.market_data import get_price
+
+    issues: List[str] = []
+    resolved = []
+    positions: Dict[str, float] = {}
+    balances: Dict[str, float] = {}
+    total_value_usd = 0.0
+
+    snapshot_ts = None
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT ts, positions_json, balances_json, total_value_usd
+            FROM portfolio_snapshots
+            WHERE tenant_id = ?
+            ORDER BY ts DESC LIMIT 1
+            """,
+            (tenant_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {
+                "commands": parsed_commands,
+                "snapshot_failed": True,
+                "issues": ["Portfolio state could not be retrieved; no snapshot available."],
+                "evidence_links": [{"label": "Portfolio page", "href": "url:/runs"}],
+            }
+        snapshot_ts = row["ts"]
+        positions = _safe_json_loads(row["positions_json"], {})
+        balances = _safe_json_loads(row["balances_json"], {})
+        total_value_usd = float(row["total_value_usd"] or 0.0)
+
+    # Build observed holding values using market data tool output.
+    holding_values: Dict[str, Dict[str, float]] = {}
+    for sym, qty in positions.items():
+        qty_f = float(qty or 0.0)
+        if qty_f <= 0:
+            continue
+        price = None
+        try:
+            price = float(get_price(sym))
+        except Exception:
+            price = None
+        if price is None or price <= 0:
+            issues.append(f"Current market price could not be determined for {sym}; unable to compute USD value.")
+            continue
+        holding_values[sym.upper()] = {"qty": qty_f, "price": price, "usd_value": qty_f * price}
+
+    for parsed in parsed_commands:
+        # Resolve "largest holding" reference.
+        if getattr(parsed, "is_portfolio_reference", False) and getattr(parsed, "portfolio_ref_type", None) == "largest_holding":
+            if holding_values:
+                largest_sym = max(holding_values.items(), key=lambda kv: kv[1]["usd_value"])[0]
+                parsed.asset = largest_sym
+                parsed.venue_symbol = f"{largest_sym}-USD"
+                parsed.resolution_source = "portfolio"
+            else:
+                issues.append("No holdings available to identify the largest position.")
+
+        if not parsed.asset and parsed.amount_mode != AmountMode.TARGET_ALLOC.value:
+            resolved.append(parsed)
+            continue
+
+        asset = (parsed.asset or "").upper()
+        state_balance = None
+        if executable_state is not None:
+            state_balance = (getattr(executable_state, "balances", {}) or {}).get(asset)
+        available_qty = float(getattr(state_balance, "available_qty", 0.0) or 0.0) if state_balance else 0.0
+        hold_qty = float(getattr(state_balance, "hold_qty", 0.0) or 0.0) if state_balance else 0.0
+        holding = holding_values.get(asset)
+
+        if parsed.amount_mode == AmountMode.ALL.value:
+            # For SELL, ALL means full executable quantity now.
+            if (parsed.side or "").lower() == "sell":
+                if state_balance is None:
+                    issues.append(f"{asset} is not held in executable balances.")
+                    parsed._resolution_status = "NOT_HELD"
+                elif available_qty <= 0 and hold_qty > 0:
+                    issues.append(f"{asset} funds are on hold and not currently executable.")
+                    parsed._resolution_status = "FUNDS_ON_HOLD"
+                elif available_qty <= 0:
+                    issues.append(f"Available quantity is 0 for {asset}.")
+                    parsed._resolution_status = "QTY_ZERO"
+                else:
+                    parsed.amount_qty = float(available_qty)
+                    if holding:
+                        parsed.amount_usd = float(holding["price"]) * float(available_qty)
+                    # else: leave amount_usd as-is (None = display unavailable, NOT blocked)
+            elif not holding:
+                issues.append(f"No position data available for {asset} in the current snapshot.")
+                parsed._resolution_status = "NOT_HELD"
+            else:
+                parsed.amount_usd = float(holding["usd_value"])
+                parsed.amount_qty = float(holding["qty"])
+
+        elif parsed.amount_mode == AmountMode.PERCENT.value and parsed.amount_pct is not None:
+            if (parsed.side or "").lower() == "sell":
+                if state_balance is None:
+                    issues.append(f"{asset} is not held in executable balances.")
+                    parsed._resolution_status = "NOT_HELD"
+                elif available_qty <= 0 and hold_qty > 0:
+                    issues.append(f"{asset} funds are on hold and not currently executable.")
+                    parsed._resolution_status = "FUNDS_ON_HOLD"
+                elif available_qty <= 0:
+                    issues.append(f"Available quantity is 0 for {asset}.")
+                    parsed._resolution_status = "QTY_ZERO"
+                else:
+                    pct = float(parsed.amount_pct) / 100.0
+                    qty = float(available_qty) * pct
+                    parsed.amount_qty = qty
+                    if holding:
+                        parsed.amount_usd = qty * float(holding["price"])
+                    # else: leave amount_usd as-is (None = display unavailable, NOT blocked)
+            elif not holding:
+                issues.append(f"No position data available for {asset} in the current snapshot.")
+                parsed._resolution_status = "NOT_HELD"
+            else:
+                parsed.amount_usd = float(holding["usd_value"]) * float(parsed.amount_pct) / 100.0
+
+        elif parsed.amount_mode == AmountMode.QUANTITY.value and parsed.amount_qty is not None:
+            compare_qty = available_qty if (parsed.side or "").lower() == "sell" else float(positions.get(asset, balances.get(asset, 0.0)) or 0.0)
+            if parsed.amount_qty > compare_qty + 1e-12:
+                issues.append(
+                    f"Requested quantity {parsed.amount_qty:g} {asset} exceeds available quantity {compare_qty:g}."
+                )
+                parsed._resolution_status = "QTY_MISSING"
+            elif not holding:
+                if (parsed.side or "").lower() == "sell":
+                    if state_balance is None:
+                        issues.append(f"{asset} is not held in executable balances.")
+                        parsed._resolution_status = "NOT_HELD"
+                    elif available_qty <= 0 and hold_qty > 0:
+                        issues.append(f"{asset} funds are on hold and not currently executable.")
+                        parsed._resolution_status = "FUNDS_ON_HOLD"
+                    else:
+                        issues.append(f"Available quantity is 0 for {asset}.")
+                        parsed._resolution_status = "QTY_ZERO"
+                else:
+                    issues.append(f"No position data available for {asset} in the current snapshot.")
+                    parsed._resolution_status = "QTY_MISSING"
+            elif (parsed.side or "").lower() == "sell" and available_qty <= 0 and hold_qty > 0:
+                issues.append(f"{asset} funds are on hold and not currently executable.")
+                parsed._resolution_status = "FUNDS_ON_HOLD"
+            elif (parsed.side or "").lower() == "sell" and available_qty <= 0:
+                issues.append(f"Available quantity is 0 for {asset}.")
+                parsed._resolution_status = "QTY_MISSING"
+            else:
+                parsed.amount_usd = float(parsed.amount_qty) * float(holding["price"])
+
+        elif parsed.amount_mode == AmountMode.TARGET_ALLOC.value and parsed.amount_pct is not None:
+            if total_value_usd <= 0:
+                issues.append("Portfolio total value is unavailable for target allocation.")
+                parsed._resolution_status = "QTY_MISSING"
+            else:
+                target_value = total_value_usd * float(parsed.amount_pct) / 100.0
+                current_value = float(holding["usd_value"]) if holding else 0.0
+                delta = target_value - current_value
+                parsed.side = "buy" if delta > 0 else "sell"
+                parsed.amount_usd = abs(delta)
+                if parsed.amount_usd <= 0:
+                    issues.append(f"{asset} is already at approximately {parsed.amount_pct:.2f}% allocation.")
+
+        resolved.append(parsed)
+
+    # Evidence label uses the requested trade assets, not all snapshot holdings.
+    requested_product_ids = []
+    for p in parsed_commands:
+        if p.asset:
+            pid = p.venue_symbol or f"{p.asset.upper()}-USD"
+            if pid not in requested_product_ids:
+                requested_product_ids.append(pid)
+    evidence_links = []
+    ts_label = f"{snapshot_ts} UTC" if snapshot_ts else "latest"
+    source = getattr(executable_state, "source", "state") if executable_state else "state"
+    evidence_links.append({
+        "label": "Executable balances snapshot",
+        "href": "url:/runs",
+    })
+    evidence_links.append({
+        "label": f"Portfolio snapshot view ({ts_label})",
+        "href": "url:/runs",
+    })
+    quote_label = ", ".join(requested_product_ids[:3]) if requested_product_ids else None
+    if quote_label:
+        evidence_links.append({
+            "label": f"Market quotes ({quote_label})",
+            "href": "url:/runs",
+        })
+
+    return {
+        "commands": resolved,
+        "snapshot_failed": False,
+        "issues": issues,
+        "evidence_links": evidence_links,
+        "snapshot_ts": snapshot_ts,
+        "positions": positions,
+    }
 
 
 def _format_asset_holdings_response(asset: str, brief: Dict[str, Any]) -> str:
-    """
-    Format a focused response for a specific asset holdings query.
-    
-    For "How much BTC do I own?" returns:
-    - Direct answer with quantity and USD value
-    - Evidence reference
-    - Brief portfolio context
-    """
-    lines = []
-    mode = brief.get("mode", "UNKNOWN")
-    as_of = brief.get("as_of", "")
-    
-    # Find the specific asset in holdings
-    holdings = brief.get("holdings", [])
-    asset_holding = None
-    for h in holdings:
-        if h.get("asset_symbol", "").upper() == asset.upper():
-            asset_holding = h
-            break
-    
-    if asset_holding:
-        qty = asset_holding.get("qty", 0)
-        usd_value = asset_holding.get("usd_value", 0)
-        current_price = asset_holding.get("current_price")
-        
-        # Direct answer
-        lines.append(f"## {asset} Holdings")
-        lines.append("")
-        lines.append(f"**{asset}:** {qty:,.8f}")
-        if current_price:
-            lines.append(f"**USD Value:** ${usd_value:,.2f} (at ${current_price:,.2f} per {asset})")
-        else:
-            lines.append(f"**USD Value:** ${usd_value:,.2f}")
-        lines.append("")
-        lines.append(f"*{mode} mode, as of {as_of}*")
-    else:
-        # Asset not found - explicitly state 0 balance
-        lines.append(f"## {asset} Holdings")
-        lines.append("")
-        lines.append(f"**{asset}:** 0.00000000")
-        lines.append(f"**USD Value:** $0.00")
-        lines.append("")
-        lines.append(f"You do not currently hold any {asset} in your {mode} portfolio.")
-        lines.append("")
-        lines.append(f"*{mode} mode, as of {as_of}*")
-    
-    # Add brief portfolio context
-    total_value = brief.get("total_value_usd", 0)
-    cash = brief.get("cash_usd", 0)
-    holdings_count = len(holdings)
-    
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    lines.append("### Portfolio Summary")
-    lines.append(f"- **Total Portfolio Value:** ${total_value:,.2f}")
-    lines.append(f"- **Cash (USD):** ${cash:,.2f}")
-    lines.append(f"- **Holdings:** {holdings_count} asset(s)")
-    
-    # List other holdings briefly
-    if holdings:
-        other_holdings = [h for h in holdings if h.get("asset_symbol", "").upper() != asset.upper()]
-        if other_holdings:
-            lines.append("")
-            lines.append("**Other Holdings:**")
-            for h in other_holdings[:5]:  # Show top 5
-                symbol = h.get("asset_symbol", "?")
-                qty = h.get("qty", 0)
-                usd = h.get("usd_value", 0)
-                lines.append(f"- {symbol}: {qty:,.6f} (${usd:,.2f})")
-            if len(other_holdings) > 5:
-                lines.append(f"- ... and {len(other_holdings) - 5} more")
-    
-    # Evidence references
-    evidence = brief.get("evidence_refs", {})
-    evidence_ids = []
-    if evidence.get("accounts_call_id"):
-        evidence_ids.append(evidence["accounts_call_id"])
-    evidence_ids.extend(evidence.get("prices_call_ids", []))
-    
-    if evidence_ids:
-        lines.append("")
-        lines.append(f"*Evidence: {len(evidence_ids)} API calls to Coinbase. Run artifacts contain full data.*")
-
-    return "\n".join(lines)
-
-
-async def _check_asset_balance(tenant_id: str, asset: str, required_usd: float) -> Dict[str, Any]:
-    """
-    Check if user has sufficient balance of an asset for a SELL order.
-
-    Returns:
-        {
-            "sufficient": bool,
-            "available": float (asset quantity),
-            "available_usd": float,
-            "current_price": float or None,
-            "error": str or None
-        }
-    """
-    from backend.core.config import get_settings
-
-    settings = get_settings()
-    result = {
-        "sufficient": False,
-        "available": 0.0,
-        "available_usd": 0.0,
-        "current_price": None,
-        "error": None
-    }
-
-    # Skip balance check for PAPER mode or if it's "AUTO" (most profitable)
-    if asset == "AUTO":
-        result["sufficient"] = True
-        result["error"] = "Cannot validate balance for AUTO selection"
-        return result
-
-    # Check if LIVE credentials are available
-    if not (settings.enable_live_trading and settings.coinbase_api_key_name and settings.coinbase_api_private_key):
-        # In PAPER mode, check paper portfolio
-        try:
-            with get_conn() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT positions_json, balances_json
-                    FROM portfolio_snapshots
-                    WHERE tenant_id = ?
-                    ORDER BY ts DESC LIMIT 1
-                    """,
-                    (tenant_id,)
-                )
-                row = cursor.fetchone()
-
-                if row:
-                    positions = _safe_json_loads(row["positions_json"], {})
-                    balances = _safe_json_loads(row["balances_json"], {})
-
-                    # Check for the asset in positions
-                    asset_upper = asset.upper()
-                    available = positions.get(asset_upper, balances.get(asset_upper, 0.0))
-
-                    if available > 0:
-                        # Estimate USD value (rough estimate using default mock data)
-                        # In paper mode, we assume balance is sufficient if > 0
-                        result["available"] = available
-                        result["available_usd"] = available * 50000 if asset_upper == "BTC" else available * 100
-                        result["sufficient"] = result["available_usd"] >= required_usd
-                    else:
-                        result["available"] = 0.0
-                        result["available_usd"] = 0.0
-                        result["sufficient"] = False
-                else:
-                    # No portfolio snapshot - assume insufficient in PAPER mode
-                    result["error"] = "No portfolio data available"
-                    result["sufficient"] = False
-        except Exception as e:
-            result["error"] = str(e)
-            result["sufficient"] = False
-        return result
-
-    # LIVE mode: fetch from Coinbase
-    try:
-        from backend.providers.coinbase_provider import CoinbaseProvider
-        from backend.services.coinbase_market_data import get_candles
-
-        provider = CoinbaseProvider()
-        balances_result = provider.get_balances(tenant_id)
-
-        balances = balances_result.get("balances", {})
-        asset_upper = asset.upper()
-        available = float(balances.get(asset_upper, 0.0))
-
-        result["available"] = available
-
-        if available <= 0:
-            result["sufficient"] = False
-            result["available_usd"] = 0.0
-            return result
-
-        # Get current price
-        try:
-            product_id = f"{asset_upper}-USD"
-            candles = get_candles(product_id, granularity="ONE_HOUR", limit=1)
-            if candles and len(candles) > 0:
-                current_price = candles[0].get("close", 0)
-                result["current_price"] = current_price
-                result["available_usd"] = available * current_price
-            else:
-                # Fallback price estimate
-                result["available_usd"] = available * 50000 if asset_upper == "BTC" else available * 100
-        except Exception as price_err:
-            logger.warning(f"Could not get price for {asset}: {price_err}")
-            result["available_usd"] = available * 50000 if asset_upper == "BTC" else available * 100
-
-        result["sufficient"] = result["available_usd"] >= required_usd
-
-    except Exception as e:
-        logger.error(f"Balance check failed for {asset}: {e}")
-        result["error"] = str(e)
-        result["sufficient"] = False
-
-    return result
+    """Format a focused response for a specific asset holdings query."""
+    from backend.agents.narrative import format_asset_holdings_narrative
+    return format_asset_holdings_narrative(asset, brief)
 
 
 async def _check_min_notional(asset: str, asset_class: str = "CRYPTO") -> Dict[str, Any]:
@@ -516,7 +437,7 @@ async def _chat_command_impl(
 ):
     """Internal implementation of chat_command with full error propagation to caller."""
     from backend.agents.intent_router import classify_intent, IntentType
-    from backend.agents.trade_parser import parse_trade_command, is_missing_amount
+    from backend.agents.trade_parser import is_missing_amount
     from backend.services.conversation_state import (
         get_pending_trade, store_pending_trade, clear_pending_trade, PendingTrade
     )
@@ -604,10 +525,16 @@ async def _chat_command_impl(
                     conn.commit()
 
                 # Build response BEFORE side effect (two-phase pattern, NF4)
+                from backend.agents.narrative import format_trade_execution_narrative
                 response_content = {
                     "run_id": run_id,
                     "parsed_intent": parsed_intent.model_dump(),
-                    "content": f"Confirmed. Executing {pending.side} ${pending.amount_usd} of {pending.asset}...",
+                    "content": format_trade_execution_narrative(
+                        side=pending.side,
+                        amount_usd=pending.amount_usd,
+                        asset=pending.asset,
+                        run_id=run_id,
+                    ),
                     "intent": "TRADE_EXECUTION",
                     "status": "EXECUTING",
                     "request_id": request_id
@@ -688,7 +615,7 @@ async def _chat_command_impl(
         if conversation_id:
             clear_pending_trade(conversation_id)
 
-        # Parse proposal and execute
+        # Parse proposal and execute SEQUENTIALLY (one order per confirmation).
         from backend.agents.planner import plan_execution
 
         try:
@@ -696,65 +623,62 @@ async def _chat_command_impl(
         except Exception:
             proposal = {}
 
-        side = proposal.get("side", "buy")
-        asset = proposal.get("asset", "BTC")
-        amount_usd = proposal.get("amount_usd", 10.0)
-        mode = confirmation["mode"]
+        actions = proposal.get("actions")
+        if not actions:
+            actions = [{
+                "side": proposal.get("side", "buy"),
+                "asset": proposal.get("asset", "BTC"),
+                "amount_usd": proposal.get("amount_usd", 10.0),
+                "mode": confirmation["mode"],
+                "lookback_hours": proposal.get("lookback_hours", 24),
+                "is_most_profitable": proposal.get("is_most_profitable", False),
+                "asset_class": proposal.get("asset_class", "CRYPTO"),
+                "step_index": 0,
+                "step_status": "READY",
+            }]
 
-        # S1: Block LIVE trades if master kill switch is active
+        current_idx = int(proposal.get("current_action_index", 0))
+        is_sequential = bool(proposal.get("sequential", False)) and len(actions) > 1
+        news_enabled = proposal.get("news_enabled", True)
+
+        # Find the first READY action at or after current_action_index.
+        current_action = None
+        for idx in range(current_idx, len(actions)):
+            if actions[idx].get("step_status") in ("READY", "QUEUED", None):
+                current_action = actions[idx]
+                current_idx = idx
+                break
+
+        if not current_action:
+            return JSONResponse(content={
+                "content": "All queued actions have been completed or are blocked. No further steps to execute.",
+                "run_id": None,
+                "intent": "TRADE_EXECUTION",
+                "status": "COMPLETED",
+                "request_id": request_id,
+            })
+
+        # Execute ONLY the current action.
+        action = current_action
+        side = action.get("side", "buy")
+        asset = action.get("asset", "BTC")
+        amount_usd = float(action.get("amount_usd", 10.0))
+        mode = action.get("mode", confirmation["mode"])
+        lookback_hours = float(action.get("lookback_hours", 24))
+        is_most_profitable = bool(action.get("is_most_profitable", False))
+        asset_class = action.get("asset_class", "CRYPTO")
+
         if mode == "LIVE":
             _settings = get_settings()
             if _settings.trading_disable_live:
                 return JSONResponse(status_code=403, content={
-                    "error": {"code": "LIVE_DISABLED", "message": "LIVE trading is disabled via TRADING_DISABLE_LIVE"},
-                    "request_id": request_id
+                    "error": {
+                        "code": "LIVE_DISABLED",
+                        "message": "Live trading is disabled by safety policy.",
+                    },
+                    "request_id": request_id,
                 })
 
-        lookback_hours = proposal.get("lookback_hours", 24)
-        is_most_profitable = proposal.get("is_most_profitable", False)
-        asset_class = proposal.get("asset_class", "CRYPTO")
-        news_enabled = proposal.get("news_enabled", True)
-        selection_result = proposal.get("selection_result")  # Pre-computed selection
-
-        # Build universe: use pre-selected asset if available, else build universe
-        if selection_result and selection_result.get("selected_symbol"):
-            # Use the pre-selected asset from the selection engine
-            selected_symbol = selection_result["selected_symbol"]
-            asset = selected_symbol  # Update asset to the selected one
-            universe = [f"{selected_symbol}-USD"]
-            display_asset = f"{selected_symbol} (top performer)"
-            logger.info(
-                "Using pre-selected asset: %s (return: %s%%)",
-                selected_symbol, selection_result.get("selected_return_pct", "N/A")
-            )
-        elif is_most_profitable or asset == "AUTO":
-            # Fallback: dynamically build universe (should rarely happen)
-            if asset_class == "STOCK":
-                # Use stock watchlist for stocks
-                universe = [f"{s}-USD" for s in settings.stock_watchlist_list]
-                display_asset = "most profitable stock"
-            else:
-                # Use top crypto universe dynamically
-                try:
-                    from backend.services.coinbase_market_data import list_products
-                    products = list_products(quote="USD")
-                    # Filter out stablecoins and take top 25
-                    STABLECOINS = {"USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "GUSD"}
-                    universe = [
-                        p["product_id"] for p in products
-                        if p.get("base_currency_id", "").upper() not in STABLECOINS
-                    ][:25]
-                    if not universe:
-                        universe = ["BTC-USD", "ETH-USD", "SOL-USD", "MATIC-USD", "AVAX-USD"]
-                except Exception as e:
-                    logger.warning("Failed to fetch dynamic universe: %s", str(e)[:100])
-                    universe = ["BTC-USD", "ETH-USD", "SOL-USD", "MATIC-USD", "AVAX-USD"]
-                display_asset = "most profitable crypto"
-        else:
-            universe = [f"{asset}-USD"]
-            display_asset = asset
-
-        # Map lookback_hours to window string
         if lookback_hours <= 1:
             window = "1h"
         elif lookback_hours <= 24:
@@ -764,7 +688,10 @@ async def _chat_command_impl(
         else:
             window = "7d"
 
-        raw_command = f"Confirmed {mode} trade: {side} ${amount_usd} of {display_asset}"
+        symbol = action.get("venue_symbol") or (f"{asset}-USD")
+        universe = [symbol]
+        qty_for_sell = action.get("base_size")
+        raw_command = f"Confirmed {mode} trade: {side} ${amount_usd} of {asset}"
 
         parsed_intent = TradeIntent(
             side=side,
@@ -773,29 +700,19 @@ async def _chat_command_impl(
             raw_command=raw_command,
             metric="return",
             window=window,
-            lookback_hours=lookback_hours
+            lookback_hours=int(lookback_hours),
         )
 
-        run_id = create_run(
-            tenant_id=tenant_id,
-            execution_mode=mode
-        )
-
-        # Build proper execution plan via planner
+        run_id = create_run(tenant_id=tenant_id, execution_mode=mode)
         execution_plan = plan_execution(parsed_intent, run_id)
         execution_plan_dict = execution_plan.dict()
-
-        # For direct asset (not "most profitable"), pre-select the asset
         if not is_most_profitable and asset != "AUTO":
-            symbol = f"{asset}-USD"
             execution_plan_dict["selected_asset"] = symbol
-            execution_plan_dict["selected_order"] = {
-                "symbol": symbol,
-                "side": side,
-                "notional_usd": amount_usd
-            }
+            order_spec = {"symbol": symbol, "side": side, "notional_usd": amount_usd}
+            if qty_for_sell and side.lower() == "sell":
+                order_spec["qty"] = qty_for_sell
+            execution_plan_dict["selected_order"] = order_spec
 
-        # Update run with metadata, intent, and execution plan
         metadata = {
             "intent": "TRADE_EXECUTION",
             "confirmed": True,
@@ -808,7 +725,9 @@ async def _chat_command_impl(
             "lookback_hours": lookback_hours,
             "universe": universe,
             "asset_class": asset_class,
-            "news_enabled": news_enabled
+            "news_enabled": news_enabled,
+            "step_index": current_idx,
+            "total_steps": len(actions),
         }
 
         with get_conn() as conn:
@@ -829,37 +748,158 @@ async def _chat_command_impl(
                     json_dumps(execution_plan_dict),
                     1 if news_enabled else 0,
                     asset_class,
-                    run_id
-                )
+                    run_id,
+                ),
             )
             conn.commit()
 
-        # Build response BEFORE side effect (two-phase pattern, NF4)
-        if asset_class == "STOCK" or mode == "ASSISTED_LIVE":
-            content_msg = f"Confirmed. Generating order ticket for {side} ${amount_usd} of {display_asset}..."
-            intent_type = "TRADE_TICKET_CREATING"
-        else:
-            content_msg = f"Confirmed. Executing {side} ${amount_usd} of {display_asset}..."
-            intent_type = "TRADE_EXECUTION"
+        background_tasks.add_task(execute_run, run_id=run_id)
+
+        # Mark current action as EXECUTING and advance the index for the next confirmation.
+        actions[current_idx]["step_status"] = "EXECUTING"
+        actions[current_idx]["run_id"] = run_id
+        next_idx = current_idx + 1
+
+        remaining_actions = [a for a in actions[next_idx:] if a.get("step_status") in ("QUEUED", "READY", None)]
+
+        # If sequential and there are remaining actions, re-preflight and store updated proposal.
+        next_confirmation_id = None
+        next_step_blocked_reason = None
+        if is_sequential and remaining_actions:
+            next_action = remaining_actions[0]
+            try:
+                from backend.services.trade_preflight import run_preflight as repreflight
+                from backend.services.asset_resolver import resolve_from_executable_state, RESOLUTION_OK
+                from backend.agents.trade_parser import ParsedTradeCommand
+                next_exec_state = _fetch_executable_state(tenant_id)
+                next_catalog = _build_product_catalog(list((getattr(next_exec_state, "balances", {}) or {}).keys()))
+                repf_cmds = [ParsedTradeCommand(
+                    side=next_action.get("side", "buy"),
+                    asset=next_action.get("asset"),
+                    amount_mode=next_action.get("amount_mode", "quote_usd"),
+                    amount_usd=next_action.get("amount_usd"),
+                    asset_class=next_action.get("asset_class", "CRYPTO"),
+                )]
+                refreshed = await _resolve_amount_from_portfolio(tenant_id, repf_cmds, next_exec_state)
+                if refreshed.get("snapshot_failed"):
+                    next_step_blocked_reason = "Portfolio state unavailable after Step " + str(current_idx + 1)
+                    next_action["step_status"] = "BLOCKED"
+                    next_action["blocked_reason"] = next_step_blocked_reason
+                else:
+                    refreshed_issues = refreshed.get("issues", [])
+                    if refreshed_issues:
+                        next_step_blocked_reason = "; ".join(refreshed_issues[:2])
+                        next_action["step_status"] = "BLOCKED"
+                        next_action["blocked_reason"] = next_step_blocked_reason
+                    else:
+                        refreshed_cmd = refreshed.get("commands", repf_cmds)[0]
+                        resolution = None
+                        if (refreshed_cmd.side or "").lower() == "sell" and refreshed_cmd.asset:
+                            resolution = resolve_from_executable_state(refreshed_cmd.asset, next_exec_state, next_catalog)
+                            if resolution.resolution_status != RESOLUTION_OK:
+                                next_step_blocked_reason = resolution.user_message_if_blocked
+                                next_action["step_status"] = "BLOCKED"
+                                next_action["blocked_reason"] = next_step_blocked_reason
+                                resolution = None
+                        if next_action.get("step_status") == "BLOCKED":
+                            raise ValueError(next_step_blocked_reason or "Next step blocked")
+                        if refreshed_cmd.amount_usd and float(refreshed_cmd.amount_usd) > 0:
+                            next_action["amount_usd"] = float(refreshed_cmd.amount_usd)
+                        if getattr(refreshed_cmd, "amount_qty", None):
+                            next_action["base_size"] = float(refreshed_cmd.amount_qty)
+                        re_pf = await repreflight(
+                            tenant_id=tenant_id,
+                            side=refreshed_cmd.side,
+                            asset=refreshed_cmd.asset,
+                            amount_usd=float(refreshed_cmd.amount_usd or 0.0),
+                            asset_class=refreshed_cmd.asset_class,
+                            mode="LIVE",
+                            executable_qty=(resolution.executable_qty if resolution else None),
+                            hold_qty=(resolution.hold_qty if resolution else None),
+                            product_flags=(resolution.product_flags if resolution else None),
+                        )
+                        if not re_pf.valid:
+                            next_step_blocked_reason = re_pf.user_message or "Next step preflight failed"
+                            next_action["step_status"] = "BLOCKED"
+                            next_action["blocked_reason"] = next_step_blocked_reason
+                        else:
+                            next_action["step_status"] = "READY"
+            except Exception as repf_err:
+                logger.warning("Re-preflight for next step failed: %s", str(repf_err)[:200])
+                if next_action.get("step_status") != "BLOCKED":
+                    next_action["step_status"] = "READY"
+
+            updated_proposal = dict(proposal)
+            updated_proposal["actions"] = actions
+            updated_proposal["current_action_index"] = next_idx
+            next_confirmation_id = repo.create_pending(
+                tenant_id=tenant_id,
+                conversation_id=confirmation.get("conversation_id", f"ephemeral_{new_id('eph')}"),
+                proposal_json=updated_proposal,
+                mode=remaining_actions[0].get("mode", mode),
+                user_id=user_id,
+                ttl_seconds=300,
+            )
+            if news_enabled and next_confirmation_id:
+                try:
+                    next_asset = (next_action.get("asset") or "").strip().upper() or (
+                        (next_action.get("venue_symbol") or "").split("-")[0].upper()
+                    )
+                    next_asset = next_asset or "UNKNOWN"
+                    next_insight = await asyncio.wait_for(
+                        generate_insight(
+                            asset=next_asset,
+                            side=next_action.get("side", "buy"),
+                            notional_usd=float(next_action.get("amount_usd", 0.0) or 0.0),
+                            asset_class=next_action.get("asset_class", "CRYPTO"),
+                            news_enabled=True,
+                            mode=next_action.get("mode", mode),
+                            lookback_hours=int(next_action.get("lookback_hours") or 24),
+                            request_id=request_id,
+                        ),
+                        timeout=12.0,
+                    )
+                    next_insight["current_step_asset"] = next_asset
+                    next_insight["queued_steps_notice"] = "Queued steps will run news checks at execution time."
+                    repo.update_insight(next_confirmation_id, next_insight)
+                except Exception as next_insight_err:
+                    logger.warning(
+                        "next_step_insight_failed request_id=%s next_conf=%s asset=%s err=%s",
+                        request_id,
+                        next_confirmation_id,
+                        next_action.get("asset"),
+                        str(next_insight_err)[:200],
+                    )
+
+        from backend.agents.narrative import format_trade_execution_narrative
+        base_narrative = format_trade_execution_narrative(
+            side=side,
+            amount_usd=amount_usd,
+            asset=asset,
+            run_id=run_id,
+        )
 
         response_content = {
             "run_id": run_id,
+            "run_ids": [run_id],
             "parsed_intent": parsed_intent.dict(),
-            "content": content_msg,
-            "intent": intent_type,
+            "content": base_narrative,
+            "intent": "TRADE_EXECUTION",
             "status": "EXECUTING",
             "confirmation_id": confirmation_id,
-            "asset_class": asset_class,
-            "request_id": request_id
+            "request_id": request_id,
+            "step_index": current_idx,
+            "total_steps": len(actions),
+            "remaining_steps": len(remaining_actions),
+            "next_confirmation_id": next_confirmation_id,
+            "next_step_blocked": next_step_blocked_reason,
+            "pending_trade": {
+                "side": side,
+                "asset": asset,
+                "amount_usd": amount_usd,
+                "mode": mode,
+            },
         }
-
-        logger.info(
-            "confirmation_confirmed: conf=%s tenant=%s run=%s mode=%s asset=%s asset_class=%s news=%s most_profitable=%s",
-            confirmation_id, tenant_id, run_id, mode, asset, asset_class, news_enabled, is_most_profitable
-        )
-
-        background_tasks.add_task(execute_run, run_id=run_id)
-
         return JSONResponse(content=response_content)
     
     if text_upper == "CANCEL":
@@ -914,363 +954,795 @@ async def _chat_command_impl(
     
     # STEP 4: Handle TRADE_EXECUTION intent
     if intent == IntentType.TRADE_EXECUTION:
-        parsed = parse_trade_command(text)
+        from backend.agents.trade_parser import parse_trade_commands, AmountMode
+        from backend.services.trade_preflight import run_preflight
+        from backend.db.repo.trade_confirmations_repo import TradeConfirmationsRepo
+        from backend.services.pre_confirm_insight import generate_insight
+        from backend.services.asset_selection_engine import select_asset, selection_result_to_dict
+        from backend.services.relative_asset_selector import select_relative_asset
+        from backend.services.asset_resolver import (
+            resolve_from_executable_state,
+            resolve_all_holdings,
+            RESOLUTION_OK,
+        )
+        from backend.agents.trade_reasoner import reason_about_plan
 
-        # Check for missing amount
-        if is_missing_amount(parsed):
-            resp = missing_amount_prompt(parsed.side or "buy", parsed.asset)
-            resp["request_id"] = request_id
-            return JSONResponse(content=resp)
-
-        # Check for ambiguous asset class
-        if parsed.asset_class == "AMBIGUOUS":
+        tenant_id = user.get("tenant_id", "t_default")
+        user_id = user.get("user_id", "u_default")
+        news_enabled = request_body.news_enabled if request_body.news_enabled is not None else True
+        logger.info(
+            "trade_news_toggle request_id=%s intent=TRADE_EXECUTION news_enabled=%s",
+            request_id,
+            news_enabled,
+        )
+        parsed_commands = parse_trade_commands(text)
+        if not parsed_commands:
+            from backend.agents.narrative import format_no_parse_narrative, build_narrative_structured
+            no_parse_content = format_no_parse_narrative()
             return JSONResponse(content={
-                "content": "I couldn't determine if you want to trade crypto or stocks. Please clarify:\n\n"
-                           "- For crypto: 'Buy $50 of BTC' or 'Buy $50 crypto'\n"
-                           "- For stocks: 'Buy $50 of AAPL stock' or 'Buy $50 AAPL equity'",
+                "content": no_parse_content,
                 "run_id": None,
-                "intent": "TRADE_EXECUTION_INCOMPLETE",
-                "status": "AWAITING_ASSET_CLASS",
-                "request_id": request_id
+                "intent": "TRADE_EXECUTION",
+                "status": "REJECTED",
+                "request_id": request_id,
+                "narrative_structured": build_narrative_structured(no_parse_content),
             })
 
-        # Handle "sell last purchase" — resolve from order history
-        if parsed.is_sell_last_purchase:
-            from backend.services.symbol_resolver import get_last_purchase
-            _tenant = user.get("tenant_id", "t_default")
-            last = get_last_purchase(_tenant)
-            if last:
+        executable_state = _fetch_executable_state(tenant_id)
+        state_symbols = list((getattr(executable_state, "balances", {}) or {}).keys())
+        product_catalog = _build_product_catalog(state_symbols)
+
+        # Expand "sell all holdings" into per-asset SELL actions from executable balances.
+        expanded_commands: List[Any] = []
+        for parsed in parsed_commands:
+            is_multi_sell_all = (
+                (parsed.side or "").lower() == "sell"
+                and parsed.amount_mode == AmountMode.ALL.value
+                and not parsed.asset
+            )
+            if not is_multi_sell_all:
+                expanded_commands.append(parsed)
+                continue
+            tradable, skipped = resolve_all_holdings(executable_state, product_catalog)
+            if tradable:
+                for r in tradable:
+                    cmd = parsed.model_copy(deep=True)
+                    cmd.asset = r.symbol
+                    cmd.venue_symbol = r.product_id
+                    cmd.amount_qty = float(r.executable_qty or 0.0)
+                    cmd.amount_mode = AmountMode.ALL.value
+                    expanded_commands.append(cmd)
+            else:
+                expanded_commands.append(parsed)
+            for r in skipped:
+                parsed._expand_skipped = getattr(parsed, "_expand_skipped", []) + [r.user_message_if_blocked]
+        parsed_commands = expanded_commands
+
+        # State-first: fetch portfolio snapshot for reference + display value only.
+        requires_state = any(
+            (p.side or "").lower() in ("sell", "close")
+            or getattr(p, "is_portfolio_reference", False)
+            or p.amount_mode in ("all", "percent", "quantity", "target_alloc")
+            for p in parsed_commands
+        )
+        state_issues: List[str] = []
+        evidence_links: List[Dict[str, str]] = [{"label": "Command parse trace", "href": "url:/chat"}]
+
+        resolved = await _resolve_amount_from_portfolio(tenant_id, parsed_commands, executable_state)
+
+        if resolved.get("snapshot_failed"):
+            if requires_state:
+                from backend.agents.narrative import format_snapshot_failed_narrative, build_narrative_structured
+                content = format_snapshot_failed_narrative()
+                return JSONResponse(content={
+                    "content": content,
+                    "run_id": None,
+                    "intent": "TRADE_EXECUTION",
+                    "status": "REJECTED",
+                    "request_id": request_id,
+                    "narrative_structured": build_narrative_structured(content),
+                    "suggestions": ["Analyze my portfolio"],
+                })
+            # For buy-only requests, proceed without snapshot data.
+        else:
+            parsed_commands = resolved.get("commands", parsed_commands)
+            state_issues = list(resolved.get("issues", []))
+            evidence_links = resolved.get("evidence_links", evidence_links)
+            for p in parsed_commands:
+                state_issues.extend(getattr(p, "_expand_skipped", []))
+
+        # Phase 4: State coherence guard.
+        # Trigger a balances refresh if EITHER:
+        #   (a) snapshot is newer than balances by > 2 minutes (preventive staleness refresh), OR
+        #   (b) snapshot shows asset qty > 0 but executable balances show 0 (reactive mismatch refresh).
+        _forced_refresh = False
+        _resolved_positions = resolved.get("positions", {}) if not resolved.get("snapshot_failed") else {}
+
+        # (a) Timestamp-based staleness check
+        _snapshot_ts_str = resolved.get("snapshot_ts") if not resolved.get("snapshot_failed") else None
+        _balances_ts_str = getattr(executable_state, "fetched_at", None)
+        _ts_stale = False
+        if _snapshot_ts_str and _balances_ts_str:
+            try:
+                from datetime import datetime, timezone
+                _snap_dt = datetime.fromisoformat(_snapshot_ts_str.replace("Z", "+00:00"))
+                _bal_dt = datetime.fromisoformat(_balances_ts_str.replace("Z", "+00:00"))
+                if (_snap_dt - _bal_dt).total_seconds() > 120:
+                    _ts_stale = True
+            except Exception:
+                pass
+
+        # (b) Qty-mismatch check
+        _state_mismatch_assets = []
+        for _p in parsed_commands:
+            _a = (_p.asset or "").upper()
+            if not _a or ((_p.side or "").lower() != "sell"):
+                continue
+            _snap_qty = float(_resolved_positions.get(_a, 0) or 0)
+            _exec_bal = (getattr(executable_state, "balances", {}) or {}).get(_a)
+            _exec_qty = float(getattr(_exec_bal, "available_qty", 0) or 0) if _exec_bal else 0.0
+            if _snap_qty > 0 and _exec_qty <= 0:
+                _state_mismatch_assets.append(_a)
+
+        if _ts_stale or _state_mismatch_assets:
+            _refresh_reason = []
+            if _ts_stale:
+                _refresh_reason.append(f"snapshot_ts={_snapshot_ts_str} is >2min newer than balances_fetched_at={_balances_ts_str}")
+            if _state_mismatch_assets:
+                _refresh_reason.append(f"qty_mismatch assets={_state_mismatch_assets}")
+            logger.info("state_coherence_refresh: %s — refreshing balances", " | ".join(_refresh_reason))
+            executable_state = _fetch_executable_state(tenant_id)
+            state_symbols = list((getattr(executable_state, "balances", {}) or {}).keys())
+            product_catalog = _build_product_catalog(state_symbols)
+            _forced_refresh = True
+
+        _existing_labels = {e.get("label") for e in evidence_links}
+        for _ev in [
+            {"label": "Executable balances snapshot", "href": "url:/runs"},
+            {"label": "Product tradability check", "href": "url:/runs"},
+            {"label": "Trade preflight report", "href": "url:/runs"},
+        ]:
+            if _ev["label"] not in _existing_labels:
+                evidence_links.append(_ev)
+
+        valid_actions: List[Dict[str, Any]] = []
+        blocked_messages: List[str] = []
+        blocked_suggestions: List[str] = []
+        adjustment_messages: List[str] = []
+
+        from backend.services.trade_preflight import HUMAN_MESSAGES as PREFLIGHT_MESSAGES
+
+        for parsed in parsed_commands:
+            selected_result_dict = None
+            if parsed.asset_class == "AMBIGUOUS":
+                blocked_messages.append(
+                    f"{PREFLIGHT_MESSAGES['ASSET_NOT_FOUND']} ({parsed.asset or 'unknown'})"
+                )
+                continue
+
+            if parsed.is_sell_last_purchase:
+                from backend.services.symbol_resolver import get_last_purchase
+                last = get_last_purchase(tenant_id)
+                if not last:
+                    blocked_messages.append("No recent purchase found to sell.")
+                    continue
                 parsed.asset = last.base_symbol
                 parsed.venue_symbol = last.product_id
                 parsed.side = "sell"
                 parsed.resolution_source = last.source
-                logger.info("sell_last_purchase resolved to %s for tenant %s", last.product_id, _tenant)
-            else:
-                return JSONResponse(content={
-                    "content": "No recent purchase found to sell. You haven't bought any assets yet.",
-                    "run_id": None,
-                    "intent": "TRADE_EXECUTION_INCOMPLETE",
-                    "status": "REJECTED",
-                    "reason_code": "NO_LAST_PURCHASE",
-                    "request_id": request_id
-                })
 
-        # Check for missing asset (and not "most profitable")
-        if not parsed.asset and not parsed.is_most_profitable:
-            asset_examples = "BTC, ETH, SOL" if parsed.asset_class == "CRYPTO" else "AAPL, MSFT, NVDA"
-            asset_type = "cryptocurrency" if parsed.asset_class == "CRYPTO" else "stock"
-            return JSONResponse(content={
-                "content": f"Which {asset_type} do you want to trade? (e.g., {asset_examples})",
-                "run_id": None,
-                "intent": "TRADE_EXECUTION_INCOMPLETE",
-                "status": "AWAITING_INPUT",
-                "request_id": request_id
+            if not parsed.asset:
+                try:
+                    rel = await select_relative_asset(
+                        command_text=text,
+                        lookback_hours=float(parsed.lookback_hours or 24.0),
+                        executable_state=executable_state,
+                        product_catalog=product_catalog,
+                    )
+                except Exception:
+                    rel = None
+                if rel:
+                    parsed.asset = rel.symbol
+                    parsed.venue_symbol = rel.product_id
+                    parsed.asset_class = "CRYPTO"
+                    parsed.resolution_source = "relative_selector"
+                    selected_result_dict = {
+                        "selected_symbol": rel.symbol,
+                        "selected_return_pct": round(float(rel.metric_value), 4),
+                        "top_candidates": [{"symbol": rel.symbol, "product_id": rel.product_id}],
+                        "universe_description": f"holdings universe ({rel.universe_size})",
+                        "window_description": rel.timeframe_label,
+                        "why_explanation": rel.rationale,
+                        "fallback_used": False,
+                        "lookback_hours": float(parsed.lookback_hours or 24.0),
+                        "universe_size": rel.universe_size,
+                        "evaluated_count": rel.universe_size,
+                    }
+                    label = f"Selection rationale ({rel.symbol}, {rel.timeframe_label})"
+                    if not any((e.get("label") == label) for e in evidence_links):
+                        evidence_links.append({"label": label, "href": "url:/runs"})
+
+            if parsed.is_most_profitable and not parsed.asset:
+                try:
+                    if parsed.universe_constraint == "holdings_only":
+                        rel = await select_relative_asset(
+                            command_text=text,
+                            lookback_hours=float(parsed.lookback_hours or 24.0),
+                            executable_state=executable_state,
+                            product_catalog=product_catalog,
+                        )
+                        if not rel:
+                            blocked_messages.append(
+                                "Could not determine which holding matches your request. "
+                                "Try naming the asset directly (e.g. 'sell BTC')."
+                            )
+                            continue
+                        parsed.asset = rel.symbol
+                        parsed.venue_symbol = rel.product_id
+                        parsed.asset_class = "CRYPTO"
+                        parsed.resolution_source = "relative_selector"
+                        selected_result_dict = {
+                            "selected_symbol": rel.symbol,
+                            "selected_return_pct": round(float(rel.metric_value), 4),
+                            "top_candidates": [{"symbol": rel.symbol, "product_id": rel.product_id}],
+                            "universe_description": f"holdings universe ({rel.universe_size})",
+                            "window_description": rel.timeframe_label,
+                            "why_explanation": rel.rationale,
+                            "fallback_used": False,
+                            "lookback_hours": float(parsed.lookback_hours or 24.0),
+                            "universe_size": rel.universe_size,
+                            "evaluated_count": rel.universe_size,
+                        }
+                    else:
+                        selection = await select_asset(
+                            criteria=parsed.selection_criteria or "highest_performing",
+                            lookback_hours=parsed.lookback_hours,
+                            notional_usd=parsed.amount_usd or 10.0,
+                            universe_constraint=parsed.universe_constraint or "top_25_volume",
+                            threshold_pct=parsed.threshold_pct,
+                            asset_class=parsed.asset_class,
+                        )
+                        parsed.asset = selection.selected_symbol
+                        parsed.venue_symbol = f"{selection.selected_symbol}-USD"
+                        parsed.resolution_source = "selection_engine"
+                        selected_result_dict = selection_result_to_dict(selection)
+                except Exception as selection_err:
+                    logger.warning("Asset selection failed: %s", str(selection_err)[:200])
+                    blocked_messages.append(PREFLIGHT_MESSAGES["MARKET_UNAVAILABLE"])
+                    continue
+
+            # Heuristic fallback for "sell biggest loser/down the most" phrasing:
+            # if no symbol resolved, use the largest executable non-fiat holding.
+            if (
+                not parsed.asset
+                and (parsed.side or "").lower() == "sell"
+                and ("biggest loser" in text.lower() or "down the most" in text.lower())
+            ):
+                balances_map = getattr(executable_state, "balances", {}) or {}
+                candidates = []
+                for _sym, _bal in balances_map.items():
+                    sym_u = str(_sym or "").upper()
+                    if not sym_u or sym_u in ("USD", "USDC", "USDT"):
+                        continue
+                    qty = float(getattr(_bal, "available_qty", 0.0) or 0.0)
+                    if qty > 0:
+                        candidates.append((sym_u, qty))
+                if candidates:
+                    candidates.sort(key=lambda x: x[1], reverse=True)
+                    parsed.asset = candidates[0][0]
+                    parsed.venue_symbol = f"{parsed.asset}-USD"
+
+            if not parsed.asset and not parsed.is_most_profitable:
+                blocked_messages.append(PREFLIGHT_MESSAGES["ASSET_NOT_FOUND"])
+                continue
+
+            resolution = None
+            if (parsed.side or "").lower() == "sell" and parsed.asset:
+                resolution = resolve_from_executable_state(parsed.asset, executable_state, product_catalog)
+                parsed.venue_symbol = resolution.product_id or parsed.venue_symbol
+                if resolution.resolution_status != RESOLUTION_OK:
+                    blocked_messages.append(resolution.user_message_if_blocked)
+                    continue
+                if parsed.amount_mode == AmountMode.ALL.value:
+                    parsed.amount_qty = float(resolution.executable_qty or 0.0)
+
+            # Skip duplicate block if _resolve_amount_from_portfolio already
+            # recorded a resolution_status explaining why amount is missing.
+            already_blocked = getattr(parsed, "_resolution_status", None)
+            if already_blocked:
+                continue
+
+            if DEBUG_TRADE_DIAGNOSTICS:
+                _asset_upper_dbg = (parsed.asset or "").upper()
+                _exec_bal_dbg = (getattr(executable_state, "balances", {}) or {}).get(_asset_upper_dbg)
+                _avail_qty_dbg = float(getattr(_exec_bal_dbg, "available_qty", 0) or 0) if _exec_bal_dbg else 0.0
+                logger.debug(
+                    "trade_action_debug asset=%s side=%s amount_mode=%s "
+                    "available_qty=%s balance_present=%s amount_usd=%s amount_qty=%s",
+                    parsed.asset,
+                    parsed.side,
+                    parsed.amount_mode,
+                    _avail_qty_dbg,
+                    _exec_bal_dbg is not None,
+                    parsed.amount_usd,
+                    getattr(parsed, "amount_qty", None),
+                )
+
+            if is_missing_amount(parsed):
+                blocked_messages.append(
+                    f"Please specify quantity, percent, or quote amount for {parsed.asset or 'the asset'}."
+                )
+                continue
+
+            if not parsed.side:
+                blocked_messages.append(
+                    f"Please specify whether to buy or sell {parsed.asset or 'the asset'}."
+                )
+                continue
+
+            parsed.mode = "LIVE"
+            if settings.trading_disable_live:
+                # Downgrade LIVE -> PAPER when master kill switch is active
+                parsed.mode = "PAPER"
+                logger.info("Downgraded LIVE -> PAPER (trading_disable_live=true): tenant=%s", tenant_id)
+
+            # For SELL ALL: executable qty is sufficient — USD value is display-only.
+            _is_sell_all = (parsed.side or "").lower() == "sell" and parsed.amount_mode == AmountMode.ALL.value
+            _has_qty = getattr(parsed, "amount_qty", None) is not None and float(parsed.amount_qty or 0) > 0
+            _has_usd = parsed.amount_usd is not None and float(parsed.amount_usd or 0) > 0
+
+            if not _has_usd and not _has_qty:
+                # Truly nothing to trade — emit a specific reason code
+                _asset_upper = (parsed.asset or "").upper()
+                _bal = (getattr(executable_state, "balances", {}) or {}).get(_asset_upper)
+                if _bal is None:
+                    _code, _msg = "ASSET_NOT_IN_BALANCES", (
+                        f"{_asset_upper} is not in your executable balances. "
+                        "If the portfolio view shows this asset, it may be pending settlement "
+                        "or on a different account."
+                    )
+                elif float(getattr(_bal, "hold_qty", 0) or 0) > 0 and float(getattr(_bal, "available_qty", 0) or 0) <= 0:
+                    _code, _msg = "FUNDS_ON_HOLD", (
+                        f"{_asset_upper} has funds on hold ({getattr(_bal, 'hold_qty', '?')} units) "
+                        "with 0 available. Retry after hold clears."
+                    )
+                elif float(getattr(_bal, "available_qty", 0) or 0) <= 0:
+                    _code, _msg = "NO_AVAILABLE_BALANCE", (
+                        f"{_asset_upper} available balance is 0. Check your Coinbase account."
+                    )
+                else:
+                    _code, _msg = "PRICE_UNAVAILABLE", (
+                        f"Could not compute sell value for {_asset_upper} — market price unavailable. "
+                        "Retry in a moment."
+                    )
+                blocked_messages.append(f"[{_code}] {_msg}")
+                continue
+
+            elif not _has_usd and _is_sell_all and _has_qty:
+                # SELL ALL with qty but no USD price — proceed; USD is display-only.
+                # Best-effort price lookup (non-blocking):
+                try:
+                    from backend.services.market_data import get_price as _get_price_fallback
+                    _px = float(_get_price_fallback(parsed.asset))
+                    if _px > 0:
+                        parsed.amount_usd = float(parsed.amount_qty) * _px
+                except Exception:
+                    pass
+                # If price still unavailable, amount_usd stays None — UI shows "≈ unavailable"
+                # Do NOT block here
+
+            elif not _has_usd and not _is_sell_all:
+                # Non-sell-all trade without USD value: block
+                blocked_messages.append(
+                    f"[AMOUNT_MISSING] Could not determine trade amount for {parsed.asset or 'the asset'}."
+                )
+                continue
+
+            artifact_refs = {
+                "balances_artifact": f"run:pending#balances_{parsed.asset}",
+                "product_check_artifact": f"run:pending#product_{parsed.asset}",
+                "preflight_artifact": f"run:pending#preflight_{parsed.asset}",
+            }
+            available_usd = None
+            if (parsed.side or "").lower() == "sell" and resolution and resolution.executable_qty:
+                try:
+                    from backend.services.market_data import get_price
+
+                    _price = float(get_price(parsed.asset))
+                    if _price > 0:
+                        available_usd = float(resolution.executable_qty) * _price
+                except Exception:
+                    available_usd = None
+
+            preflight = await run_preflight(
+                tenant_id=tenant_id,
+                side=parsed.side,
+                asset=parsed.asset,
+                amount_usd=float(parsed.amount_usd or 0.0),
+                asset_class=parsed.asset_class,
+                mode=parsed.mode,
+                executable_qty=(resolution.executable_qty if resolution else None),
+                hold_qty=(resolution.hold_qty if resolution else None),
+                available_usd=available_usd,
+                requested_qty=(float(parsed.amount_qty) if getattr(parsed, "amount_qty", None) is not None else None),
+                sell_all_requested=((parsed.side or "").lower() == "sell" and parsed.amount_mode == AmountMode.ALL.value),
+                product_flags=(resolution.product_flags if resolution else None),
+                artifacts=artifact_refs,
+                executable_state=executable_state,
+            )
+            if DEBUG_TRADE_DIAGNOSTICS:
+                _pf_reason = getattr(preflight.reason_code, "value", None) if preflight.reason_code else None
+                logger.debug(
+                    "trade_preflight_debug asset=%s side=%s preview_called=True preview_valid=%s "
+                    "preflight_reason=%s preflight_message=%s",
+                    parsed.asset,
+                    parsed.side,
+                    preflight.valid,
+                    _pf_reason or "N/A",
+                    (preflight.user_message or "")[:120],
+                )
+
+            if not preflight.valid:
+                base_msg = preflight.user_message or "Trade blocked by preflight."
+                if preflight.fixes:
+                    base_msg = f"{base_msg} Options: {', '.join(preflight.fixes)}."
+                    blocked_suggestions.extend([str(f) for f in preflight.fixes if f])
+                blocked_messages.append(base_msg)
+                continue
+
+            if preflight.requires_adjustment and preflight.adjusted_amount_usd is not None:
+                original_amount_usd = float(parsed.amount_usd or 0.0)
+                parsed.amount_usd = float(preflight.adjusted_amount_usd)
+                if (parsed.side or "").lower() == "sell" and preflight.adjusted_qty is not None:
+                    parsed.amount_qty = float(preflight.adjusted_qty)
+                qty_text = (
+                    f" ({float(preflight.adjusted_qty):.8f} {parsed.asset})"
+                    if preflight.adjusted_qty is not None and parsed.asset
+                    else ""
+                )
+                adjustment_messages.append(
+                    f"You requested ${original_amount_usd:.2f} of {parsed.asset} but only "
+                    f"~${float(preflight.adjusted_amount_usd):.2f}{qty_text} is sellable; "
+                    "I can sell the maximum available instead."
+                )
+
+            base_size = None
+            if (parsed.side or "").lower() == "sell" and getattr(parsed, "amount_qty", None):
+                base_size = float(parsed.amount_qty)
+
+            valid_actions.append({
+                "side": parsed.side,
+                "asset": parsed.asset,
+                "amount_usd": float(parsed.amount_usd) if parsed.amount_usd is not None else None,
+                "base_size": base_size,
+                "amount_mode": parsed.amount_mode,
+                "mode": parsed.mode,
+                "asset_class": parsed.asset_class,
+                "lookback_hours": parsed.lookback_hours,
+                "is_most_profitable": parsed.is_most_profitable,
+                "venue_symbol": parsed.venue_symbol or (f"{parsed.asset}-USD" if parsed.asset else None),
+                "selection_result": selected_result_dict,
+                "product_flags": resolution.product_flags if resolution else {},
+                "preflight": preflight.to_dict(),
             })
-        
-        # If "most profitable", use AUTO asset - strategy node will pick the winner
-        if parsed.is_most_profitable:
-            parsed.asset = "AUTO"
 
-        tenant_id = user.get("tenant_id", "t_default")
-        user_id = user.get("user_id", "u_default")
+        # ── Estimate portfolio total for reasoning context ────────────────
+        _portfolio_total_usd = 0.0
+        try:
+            _balances = getattr(executable_state, "balances", {}) or {}
+            from backend.services.market_data import get_price
+            for _sym, _bal in _balances.items():
+                _qty = float(getattr(_bal, "available_qty", 0) or 0)
+                try:
+                    _p = get_price(_sym)
+                    if _p:
+                        _portfolio_total_usd += _qty * float(_p)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-        # Bug 6 fix: Use unified preflight service for all validation
-        # This ensures consistent fee calculations across min_notional and balance checks
-        from backend.services.trade_preflight import run_preflight, PreflightRejectReason
-        
-        preflight_result = await run_preflight(
-            tenant_id=tenant_id,
-            side=parsed.side,
-            asset=parsed.asset,
-            amount_usd=parsed.amount_usd,
-            asset_class=parsed.asset_class,
-            mode=parsed.mode
-        )
-        
-        if not preflight_result.valid:
-            # Map preflight rejection to appropriate response
-            reason_code = preflight_result.reason_code.value if preflight_result.reason_code else "VALIDATION_FAILED"
-            
-            response_content = {
-                "content": preflight_result.message,
+        all_failures = state_issues + blocked_messages
+
+        # ── LLM Trade Reasoning ───────────────────────────────────────────
+        # One call that reasons about the verified plan before user confirms.
+        # Adds risk flags, portfolio impact, alternatives, plain-English summary.
+        # Pipeline ALWAYS continues - reasoning failure is non-fatal.
+        # Only call when there are valid actions — blocked-only commands don't need LLM reasoning.
+        if valid_actions:
+            _trade_reasoning = reason_about_plan(
+                user_text=text,
+                valid_actions=valid_actions,
+                all_failures=all_failures,
+                executable_state=executable_state,
+                total_portfolio_usd=_portfolio_total_usd,
+            )
+        else:
+            from backend.agents.trade_reasoner import TradeReasoning
+            _trade_reasoning = TradeReasoning(confidence="low", plan_summary="")
+
+        if not valid_actions:
+            from backend.agents.narrative import format_trade_blocked_narrative, build_narrative_structured
+            content = format_trade_blocked_narrative(
+                candidate_count=len(parsed_commands),
+                failures=all_failures,
+                evidence_items=evidence_links,
+            )
+            dedup_suggestions: List[str] = []
+            for s in blocked_suggestions:
+                if s not in dedup_suggestions:
+                    dedup_suggestions.append(s)
+            return JSONResponse(content={
+                "content": content,
                 "run_id": None,
                 "intent": "TRADE_EXECUTION",
                 "status": "REJECTED",
-                "reason_code": reason_code,
                 "request_id": request_id,
-                "remediation": preflight_result.remediation,
-            }
-            
-            # Add specific fields based on rejection reason
-            if preflight_result.reason_code == PreflightRejectReason.MIN_NOTIONAL_TOO_LOW:
-                response_content["requested_notional_usd"] = preflight_result.requested_usd
-                response_content["min_notional_usd"] = preflight_result.effective_min_notional
-                response_content["estimated_fee"] = preflight_result.estimated_fee
-            elif preflight_result.reason_code in (PreflightRejectReason.INSUFFICIENT_BALANCE, PreflightRejectReason.INSUFFICIENT_CASH):
-                response_content["requested_usd"] = preflight_result.requested_usd
-                response_content["available_balance"] = preflight_result.available_balance
-                response_content["available_usd"] = preflight_result.available_usd
-                response_content["asset"] = parsed.asset
-            
-            return JSONResponse(content=response_content)
+                "narrative_structured": build_narrative_structured(content),
+                "suggestions": dedup_suggestions[:4] if dedup_suggestions else None,
+            })
 
-        # --- Auto-sell path: preflight passed but requires selling holdings first ---
-        if preflight_result.requires_auto_sell and preflight_result.auto_sell_proposal:
-            auto_sell = preflight_result.auto_sell_proposal
-            logger.info(
-                "auto_sell_required: tenant=%s sell=%s amount=$%.2f to fund BUY $%.2f of %s",
-                tenant_id, auto_sell.get("sell_base_symbol"), auto_sell.get("sell_amount_usd", 0),
-                parsed.amount_usd, parsed.asset,
+        # ── Build TradeContext for downstream consumers ─────────────────
+        _trade_context_snapshot = None
+        try:
+            from backend.services.trade_context import build_trade_context, TradeAction as TCAction
+            _tc_actions = []
+            for va in valid_actions:
+                _tc_actions.append(TCAction(
+                    side=(va.get("side") or "BUY").upper(),
+                    asset=(va.get("asset") or "").upper(),
+                    product_id=va.get("venue_symbol") or f"{(va.get('asset') or '').upper()}-USD",
+                    amount_usd=float(va.get("amount_usd") or 0),
+                    amount_mode=va.get("amount_mode") or "quote_usd",
+                    sell_all=va.get("amount_mode") == "all",
+                    requested_qty=va.get("base_size"),
+                ))
+            _trade_ctx = build_trade_context(
+                tenant_id=tenant_id,
+                execution_mode=settings.execution_mode_default,
+                actions=_tc_actions,
             )
+            _trade_context_snapshot = {
+                "tenant_id": _trade_ctx.tenant_id,
+                "execution_mode": _trade_ctx.execution_mode,
+                "built_at": _trade_ctx.built_at,
+                "balances": {
+                    k: {"available_qty": v.available_qty, "hold_qty": v.hold_qty}
+                    for k, v in _trade_ctx.executable_balances.items()
+                },
+                "products": {
+                    k: {
+                        "rule_source": v.rule_source,
+                        "base_min_size": str(v.base_min_size) if v.base_min_size is not None else None,
+                        "base_increment": str(v.base_increment) if v.base_increment is not None else None,
+                        "min_market_funds": str(v.min_market_funds) if v.min_market_funds is not None else None,
+                        "verified": v.verified,
+                    }
+                    for k, v in _trade_ctx.resolved_products.items()
+                },
+                "prices": _trade_ctx.market_prices,
+            }
+        except Exception as _tc_err:
+            logger.warning("TradeContext build failed (non-fatal): %s", str(_tc_err)[:200])
 
-        # Block LIVE confirmation when LIVE is disabled - redirect to PAPER
-        if parsed.mode == "LIVE" and settings.trading_disable_live:
-            parsed.mode = "PAPER"
-            logger.info("Downgraded LIVE -> PAPER (trading_disable_live=true): tenant=%s", tenant_id)
+        # Phase 6: Collect staging diagnostics (balances, product rules, preflight decisions).
+        _staging_diag = None
+        try:
+            from backend.services.run_diagnostics import build_staging_diagnostics
+            _preflight_map = {}
+            for _va in valid_actions:
+                _key = f"{(_va.get('side') or '').upper()}_{(_va.get('asset') or '').upper()}_{(_va.get('amount_mode') or '').upper()}"
+                _preflight_map[_key] = _va.get("preflight", {})
+            _staging_diag = build_staging_diagnostics(
+                tenant_id=tenant_id,
+                referenced_assets=[va["asset"] for va in valid_actions if va.get("asset")],
+                executable_state=executable_state,
+                analysis_snapshot_asof=resolved.get("snapshot_ts") if not resolved.get("snapshot_failed") else None,
+                preflight_map=_preflight_map,
+                forced_refresh=_forced_refresh,
+            )
+        except Exception as _diag_err:
+            logger.debug("staging_diagnostics_failed (non-fatal): %s", str(_diag_err)[:200])
 
-        # Store pending trade and request confirmation
-        from backend.db.repo.trade_confirmations_repo import TradeConfirmationsRepo
+        # Store pending trade(s) with sequential execution plan.
+        repo = TradeConfirmationsRepo()
+        first = valid_actions[0]
 
-        # 1. Store in memory (legacy, for conversation-based lookups)
+        # Tag each action with a step index and status for sequential execution.
+        for idx, action in enumerate(valid_actions):
+            action["step_index"] = idx
+            action["step_status"] = "READY" if idx == 0 else "QUEUED"
+
+        proposal_json = {
+            "side": first["side"],
+            "asset": first["asset"],
+            "amount_usd": first["amount_usd"],
+            "mode": first["mode"],
+            "lookback_hours": first["lookback_hours"],
+            "is_most_profitable": first["is_most_profitable"],
+            "asset_class": first["asset_class"],
+            "news_enabled": news_enabled,
+            "locked_product_id": first.get("venue_symbol"),
+            "actions": valid_actions,
+            "current_action_index": 0,
+            "sequential": len(valid_actions) > 1,
+            "trade_context": _trade_context_snapshot,
+            "diagnostics": _staging_diag,
+        }
+
         if conversation_id:
             pending_trade = PendingTrade(
                 conversation_id=conversation_id,
-                side=parsed.side,
-                asset=parsed.asset,
-                amount_usd=parsed.amount_usd,
-                mode=parsed.mode,
-                is_most_profitable=parsed.is_most_profitable,
-                lookback_hours=parsed.lookback_hours
+                side=first["side"],
+                asset=first["asset"],
+                amount_usd=float(first["amount_usd"] or 0.0),
+                mode=first["mode"],
+                is_most_profitable=first["is_most_profitable"],
+                lookback_hours=first["lookback_hours"],
             )
             store_pending_trade(pending_trade)
 
-        # 2. ALWAYS store DURABLE confirmation in DB (source of truth)
-        repo = TradeConfirmationsRepo()
-
-        # Determine news_enabled: use request value if provided, else default True
-        news_enabled = request_body.news_enabled if request_body.news_enabled is not None else True
-
-        # For direct asset commands (not "most profitable"), lock the product_id immediately
-        direct_locked_product_id = None
-        if not parsed.is_most_profitable and parsed.asset and parsed.asset != "AUTO":
-            direct_locked_product_id = parsed.venue_symbol or f"{parsed.asset}-USD"
-
-        proposal_json = {
-            "side": parsed.side,
-            "asset": parsed.asset,
-            "amount_usd": parsed.amount_usd,
-            "mode": parsed.mode,
-            "lookback_hours": parsed.lookback_hours,
-            "is_most_profitable": parsed.is_most_profitable,
-            "asset_class": parsed.asset_class,
-            "news_enabled": news_enabled,
-            "locked_product_id": direct_locked_product_id,
-        }
-
-        # Attach auto-sell metadata if funds recycling is needed
-        if preflight_result.requires_auto_sell and preflight_result.auto_sell_proposal:
-            proposal_json["auto_sell"] = preflight_result.auto_sell_proposal
-
-        # Use conversation_id if available, otherwise use a placeholder
         effective_conversation_id = conversation_id or f"ephemeral_{new_id('eph')}"
-
         confirmation_id = repo.create_pending(
             tenant_id=tenant_id,
             conversation_id=effective_conversation_id,
             proposal_json=proposal_json,
-            mode=parsed.mode,
+            mode=first["mode"],
             user_id=user_id,
-            ttl_seconds=300
+            ttl_seconds=300,
         )
 
-        from datetime import datetime, timedelta
-        logger.info(
-            "confirmation_created: conf=%s tenant=%s conv=%s mode=%s asset=%s amount=%s asset_class=%s news=%s",
-            confirmation_id, tenant_id, effective_conversation_id, parsed.mode, parsed.asset,
-            parsed.amount_usd, parsed.asset_class, news_enabled
-        )
-
-        # For "most profitable" queries, run the asset selection engine
-        selection_result = None
-        if parsed.is_most_profitable:
-            try:
-                from backend.services.asset_selection_engine import select_asset, selection_result_to_dict
-                
-                # Determine selection criteria from parsed command
-                criteria = parsed.selection_criteria or "highest_performing"
-                universe_constraint = parsed.universe_constraint or "top_25_volume"
-                
-                selection_result = await select_asset(
-                    criteria=criteria,
-                    lookback_hours=parsed.lookback_hours,
-                    notional_usd=parsed.amount_usd,
-                    universe_constraint=universe_constraint,
-                    threshold_pct=parsed.threshold_pct,
-                    asset_class=parsed.asset_class
-                )
-                
-                # Update the parsed asset with the selected symbol
-                parsed.asset = selection_result.selected_symbol
-                parsed.venue_symbol = f"{selection_result.selected_symbol}-USD"
-                
-                # Update the proposal in the confirmation repo with the selected asset
-                # Store locked_product_id so confirmation endpoint can persist it on the run
-                proposal_json["asset"] = parsed.asset
-                proposal_json["locked_product_id"] = parsed.venue_symbol
-                proposal_json["selection_result"] = selection_result_to_dict(selection_result)
-
-                # Persist updated proposal back to DB so confirmation reads locked_product_id
-                repo.update_proposal(confirmation_id, proposal_json)
-                
-                logger.info(
-                    "Asset selection completed: selected=%s locked_product_id=%s return=%.2f%% window=%s",
-                    selection_result.selected_symbol,
-                    parsed.venue_symbol,
-                    selection_result.selected_return_pct,
-                    selection_result.window_description
-                )
-            except Exception as selection_err:
-                # Check if this is a NoMarketDataError or NoTradeableAssetError
-                from backend.services.asset_selection_engine import NoMarketDataError, NoTradeableAssetError
-                if isinstance(selection_err, NoMarketDataError):
-                    logger.warning("No market data for top performer: %s", str(selection_err)[:200])
-                    return JSONResponse(content={
-                        "content": str(selection_err),
-                        "run_id": None,
-                        "intent": "TRADE_EXECUTION",
-                        "status": "REJECTED",
-                        "reason_code": "NO_MARKET_DATA",
-                        "request_id": request_id,
-                    })
-                if isinstance(selection_err, NoTradeableAssetError):
-                    logger.warning("No tradeable asset found: %s", str(selection_err)[:200])
-                    return JSONResponse(content={
-                        "content": f"Order not submitted. No trade was placed. {selection_err}",
-                        "run_id": None,
-                        "intent": "TRADE_EXECUTION",
-                        "status": "REJECTED",
-                        "executed": False,
-                        "reason_code": "NO_TRADEABLE_TOP_PERFORMER",
-                        "request_id": request_id,
-                    })
-                logger.warning("Asset selection failed, using fallback: %s", str(selection_err)[:200])
-                # Fallback to BTC if selection fails for transient reasons
-                parsed.asset = "BTC"
-                parsed.venue_symbol = "BTC-USD"
-
-        # Display "most profitable crypto/stock" instead of "AUTO" in the prompt
-        if parsed.is_most_profitable and selection_result:
-            display_asset = f"{selection_result.selected_symbol} (top performer, {selection_result.selected_return_pct:+.2f}% in {selection_result.window_description})"
-        elif parsed.is_most_profitable:
-            display_asset = "most profitable stock" if parsed.asset_class == "STOCK" else "most profitable crypto"
-        else:
-            display_asset = parsed.asset
-
-        # ── TRADABILITY PREFLIGHT: Verify product is tradeable before showing CONFIRM ──
-        # This prevents the user from confirming a non-tradeable asset.
-        if parsed.mode == "LIVE" and parsed.asset_class == "CRYPTO":
-            product_id_to_check = parsed.venue_symbol or f"{parsed.asset}-USD"
-            try:
-                from backend.services.asset_selection_engine import verify_product_tradeable
-                if not verify_product_tradeable(product_id_to_check):
-                    logger.warning(
-                        "PREFLIGHT_FAIL: %s not tradeable on Coinbase, blocking confirmation",
-                        product_id_to_check
-                    )
-                    return JSONResponse(content={
-                        "content": (
-                            f"Order not submitted. No trade was placed. "
-                            f"{product_id_to_check} is not currently tradeable on Coinbase "
-                            f"(product offline or not available for your account)."
-                        ),
-                        "run_id": None,
-                        "intent": "TRADE_EXECUTION",
-                        "status": "REJECTED",
-                        "executed": False,
-                        "reason_code": "PRODUCT_NOT_TRADEABLE",
-                        "request_id": request_id,
-                    })
-                logger.info("PREFLIGHT_PASS: %s is tradeable", product_id_to_check)
-            except Exception as preflight_err:
-                logger.warning("Tradability preflight failed (non-blocking): %s", str(preflight_err)[:200])
-
-        # Send push notification for pending confirmation
-        try:
-            from backend.services.notifications.pushover import notify_pending_confirmation
-            notify_pending_confirmation(
-                mode=parsed.mode,
-                side=parsed.side,
-                symbol=display_asset,
-                notional_usd=parsed.amount_usd,
-                conversation_id=conversation_id
-            )
-        except Exception as notif_err:
-            logger.warning(f"Failed to send pending confirmation notification: {notif_err}")
-
-        # Generate pre-confirm financial insight (always, regardless of news toggle)
         financial_insight = None
-        try:
-            from backend.services.pre_confirm_insight import generate_insight
-            financial_insight = await generate_insight(
-                asset=parsed.asset,
-                side=parsed.side,
-                notional_usd=parsed.amount_usd,
-                asset_class=parsed.asset_class,
-                news_enabled=news_enabled,
-                mode=parsed.mode,
-                request_id=request_id
-            )
-            # Persist insight on the confirmation row
-            repo.update_insight(confirmation_id, financial_insight)
-        except Exception as insight_err:
-            logger.warning("Pre-confirm insight failed: %s", str(insight_err)[:200])
-            # I1: Provide fallback insight so frontend always renders something
-            financial_insight = {
-                "headline": "Market insight temporarily unavailable",
-                "why_it_matters": "Unable to retrieve market data. Proceed with caution.",
-                "key_facts": [],
-                "risk_flags": [],
-                "confidence": 0.0,
-                "generated_by": "fallback",
-                "sources": {},
-            }
+        if news_enabled:
+            try:
+                insight_asset = (first.get("asset") or "").strip().upper() or (
+                    (first.get("venue_symbol") or "").split("-")[0].upper()
+                )
+                insight_asset = insight_asset or "UNKNOWN"
+                financial_insight = await asyncio.wait_for(
+                    generate_insight(
+                        asset=insight_asset,
+                        side=first["side"],
+                        notional_usd=float(first["amount_usd"] or 0.0),
+                        asset_class=first.get("asset_class") or "CRYPTO",
+                        news_enabled=True,
+                        mode=first.get("mode") or "PAPER",
+                        lookback_hours=int(first.get("lookback_hours") or 24),
+                        request_id=request_id,
+                    ),
+                    timeout=12.0,
+                )
+                financial_insight["current_step_asset"] = insight_asset
+                if len(valid_actions) > 1:
+                    financial_insight["queued_steps_notice"] = "Queued steps will run news checks at execution time."
+                repo.update_insight(confirmation_id, financial_insight)
+                logger.info(
+                    "trade_news_insight_generated request_id=%s conf=%s asset=%s status=%s headlines=%s",
+                    request_id,
+                    confirmation_id,
+                    first["asset"],
+                    ((financial_insight or {}).get("news_outcome") or {}).get("status"),
+                    len((((financial_insight or {}).get("sources") or {}).get("headlines") or [])),
+                )
+            except Exception as insight_err:
+                logger.warning(
+                    "trade_news_insight_failed request_id=%s conf=%s asset=%s err=%s",
+                    request_id,
+                    confirmation_id,
+                    first["asset"],
+                    str(insight_err)[:200],
+                )
+                financial_insight = {
+                    "headline": "Market insight unavailable",
+                    "why_it_matters": "Unable to generate insight. Confirm or cancel at your discretion.",
+                    "key_facts": [],
+                    "risk_flags": ["insight_unavailable"],
+                    "confidence": 0.0,
+                    "sources": {"price_source": "none", "headlines": []},
+                    "generated_by": "template",
+                    "request_id": request_id,
+                    "impact_summary": "No headline signal found; decision is based on portfolio + price checks only.",
+                    "market_headlines": [],
+                    "news_outcome": {
+                        "queries": [first.get("asset", "UNKNOWN"), f"{first.get('asset', 'UNKNOWN')}-USD"],
+                        "lookback": f"{int(first.get('lookback_hours') or 24)}h",
+                        "sources": ["RSS", "GDELT"],
+                        "status": "error",
+                        "reason": f"News unavailable for {first.get('asset', 'UNKNOWN')} right now (provider error).",
+                        "items": 0,
+                    },
+                    "asset_news_evidence": {
+                        "assets": [first.get("asset", "UNKNOWN")],
+                        "queries": [first.get("asset", "UNKNOWN"), f"{first.get('asset', 'UNKNOWN')}-USD"],
+                        "lookback": f"{int(first.get('lookback_hours') or 24)}h",
+                        "sources": ["RSS", "GDELT"],
+                        "status": "error",
+                        "items": [],
+                        "reason_if_empty_or_error": f"News unavailable for {first.get('asset', 'UNKNOWN')} right now (provider error).",
+                    },
+                    "market_news_evidence": None,
+                    "current_step_asset": first.get("asset", "UNKNOWN"),
+                    "queued_steps_notice": "Queued steps will run news checks at execution time." if len(valid_actions) > 1 else None,
+                }
 
-        # Use different prompt for stocks (ASSISTED_LIVE creates Order Ticket, not execution)
+        if news_enabled:
+            news_label = f"News evidence ({first['asset']}, last 24h)"
+            if not any((e.get("label") == news_label) for e in evidence_links):
+                evidence_links.insert(0, {"label": news_label, "href": "url:/runs"})
+
         resp = trade_confirmation_prompt(
-            side=parsed.side,
-            asset=display_asset,
-            amount_usd=parsed.amount_usd,
-            mode=parsed.mode,
+            side=first["side"],
+            asset=first["asset"],
+            amount_usd=float(first["amount_usd"] or 0.0),
+            mode=first["mode"],
             confirmation_id=confirmation_id,
-            asset_class=parsed.asset_class
+            asset_class=first["asset_class"],
+            actions=valid_actions,
+            failures=all_failures,
+            evidence_links=(
+                evidence_links
+                + [
+                    {"label": "Product tradability check", "href": "url:/runs"},
+                    {"label": "Trade preflight report", "href": "url:/runs"},
+                ]
+            ),
+            trade_reasoning=_trade_reasoning,
         )
         resp["request_id"] = request_id
-        if financial_insight:
-            try:
-                json.dumps(financial_insight)
-                resp["financial_insight"] = financial_insight
-            except (TypeError, ValueError):
-                logger.warning("Financial insight not serializable, omitting")
-        
-        # Include selection result if asset was auto-selected
-        if selection_result:
-            try:
-                from backend.services.asset_selection_engine import selection_result_to_dict
-                resp["selection_result"] = selection_result_to_dict(selection_result)
-            except Exception as sel_err:
-                logger.warning("Failed to serialize selection result: %s", str(sel_err)[:100])
-
-        # Include auto-sell proposal if funds recycling is needed
-        if preflight_result.requires_auto_sell and preflight_result.auto_sell_proposal:
-            resp["auto_sell_proposal"] = preflight_result.auto_sell_proposal
-            # Augment the content message
-            sell_sym = preflight_result.auto_sell_proposal.get("sell_base_symbol", "asset")
-            sell_amt = preflight_result.auto_sell_proposal.get("sell_amount_usd", 0)
-            resp["content"] = (
-                f"{resp.get('content', '')}\n\n"
-                f"Note: Insufficient cash — will auto-sell ${sell_amt:.2f} of {sell_sym} first to fund this trade."
+        resp["valid_actions_count"] = len(valid_actions)
+        resp["blocked_actions_count"] = len(all_failures)
+        resp["partial_success"] = len(all_failures) > 0
+        resp["news_enabled"] = news_enabled
+        if _staging_diag is not None:
+            resp["diagnostics"] = _staging_diag
+        if adjustment_messages:
+            resp["adjustments"] = adjustment_messages
+            resp["suggestions"] = ["CONFIRM SELL MAX", "CANCEL"]
+        if news_enabled:
+            canonical_preconfirm_insight = financial_insight or {
+                "headline": "Market insight unavailable",
+                "why_it_matters": "Unable to generate insight. Confirm or cancel at your discretion.",
+                "key_facts": [],
+                "risk_flags": ["insight_unavailable"],
+                "confidence": 0.0,
+                "sources": {"price_source": "none", "headlines": []},
+                "generated_by": "template",
+                "request_id": request_id,
+                "impact_summary": "No headline signal found; decision is based on portfolio + price checks only.",
+                "market_headlines": [],
+                "news_outcome": {
+                    "queries": [first.get("asset", "UNKNOWN"), f"{first.get('asset', 'UNKNOWN')}-USD"],
+                    "lookback": f"{int(first.get('lookback_hours') or 24)}h",
+                    "sources": ["RSS", "GDELT"],
+                    "status": "error",
+                    "reason": f"News unavailable for {first.get('asset', 'UNKNOWN')} right now (provider error).",
+                    "items": 0,
+                },
+                "asset_news_evidence": {
+                    "assets": [first.get("asset", "UNKNOWN")],
+                    "queries": [first.get("asset", "UNKNOWN"), f"{first.get('asset', 'UNKNOWN')}-USD"],
+                    "lookback": f"{int(first.get('lookback_hours') or 24)}h",
+                    "sources": ["RSS", "GDELT"],
+                    "status": "error",
+                    "items": [],
+                    "reason_if_empty_or_error": f"News unavailable for {first.get('asset', 'UNKNOWN')} right now (provider error).",
+                },
+                "market_news_evidence": None,
+                "current_step_asset": first.get("asset", "UNKNOWN"),
+                "queued_steps_notice": "Queued steps will run news checks at execution time." if len(valid_actions) > 1 else None,
+            }
+            resp["preconfirm_insight"] = canonical_preconfirm_insight
+            # Backward compatibility path for older clients; canonical key is preconfirm_insight.
+            resp["financial_insight"] = canonical_preconfirm_insight
+        if DEBUG_PRECONFIRM_NEWS:
+            logger.info(
+                "preconfirm_news_payload request_id=%s intent=%s news_enabled=%s has_preconfirm_insight=%s insight_keys=%s",
+                request_id,
+                resp.get("intent"),
+                news_enabled,
+                bool(resp.get("preconfirm_insight")),
+                list((resp.get("preconfirm_insight") or {}).keys()) if isinstance(resp.get("preconfirm_insight"), dict) else [],
             )
-        
         return JSONResponse(content=resp)
     
     # STEP 5: Handle PORTFOLIO_ANALYSIS intent (deep analysis with dedicated run)
@@ -1360,6 +1832,7 @@ async def _chat_command_impl(
                 "intent": "PORTFOLIO_ANALYSIS",
                 "status": "FAILED",
                 "portfolio_brief": portfolio_brief,
+                "portfolio_snapshot_card_data": portfolio_brief,
                 "suggested_action": failure.get("suggested_action", ""),
                 "request_id": request_id
             })
@@ -1428,9 +1901,12 @@ async def _chat_command_impl(
             except Exception:
                 portfolio_brief = {}
 
+            from backend.agents.narrative import build_narrative_structured
             safe_response["content"] = content
             safe_response["portfolio_brief"] = portfolio_brief
+            safe_response["portfolio_snapshot_card_data"] = portfolio_brief
             safe_response["queried_asset"] = queried_asset
+            safe_response["narrative_structured"] = build_narrative_structured(content, brief=portfolio_brief)
 
         except Exception as phase2_err:
             logger.warning("Portfolio post-analysis enhancement failed (returning safe response): %s", str(phase2_err)[:200])
@@ -1465,16 +1941,15 @@ async def _chat_command_impl(
             row = cursor.fetchone()
 
         if not row:
-            if is_live:
-                content = "No portfolio data found. Try 'Analyze my portfolio' to fetch your live Coinbase holdings."
-            else:
-                content = "No portfolio data found yet. Execute a trade first to create portfolio snapshots, or configure Coinbase API credentials for live data."
+            from backend.agents.narrative import format_no_snapshot_narrative, build_narrative_structured
+            content = format_no_snapshot_narrative(mode_str)
             return JSONResponse(content={
                 "content": content,
                 "run_id": None,
                 "intent": intent_value,
                 "status": "COMPLETED",
-                "request_id": request_id
+                "request_id": request_id,
+                "narrative_structured": build_narrative_structured(content),
             })
 
         balances = _safe_json_loads(row["balances_json"], {})
@@ -1482,38 +1957,20 @@ async def _chat_command_impl(
         total_value = row["total_value_usd"] or 0.0
         ts = row["ts"]
 
-        # Build formatted output
-        lines = [
-            f"## Portfolio Snapshot ({mode_str} Mode)",
-            f"*As of: {ts}*",
-            "",
-            f"**Total Value:** ${total_value:,.2f}",
-            ""
-        ]
-        
-        # Add holdings table if there are positions
-        if positions:
-            lines.append("### Positions")
-            lines.append("| Asset | Quantity |")
-            lines.append("|-------|----------|")
-            for asset, qty in positions.items():
-                lines.append(f"| {asset} | {qty:,.6f} |")
-            lines.append("")
-        
-        # Add cash balances
-        lines.append("### Cash Balances")
-        lines.append("| Currency | Amount |")
-        lines.append("|----------|--------|")
-        for currency, amount in balances.items():
-            if currency == "USD":
-                lines.append(f"| {currency} | ${amount:,.2f} |")
-            else:
-                lines.append(f"| {currency} | {amount:,.6f} |")
-        
-        # Add mode-specific note
-        if not is_live:
-            lines.append("")
-            lines.append("*Note: This is paper trading data. Configure Coinbase API credentials to see your real portfolio.*")
+        top_positions = sorted(
+            [(str(asset), float(qty or 0.0)) for asset, qty in positions.items()],
+            key=lambda kv: kv[1],
+            reverse=True
+        )[:3]
+        usd_cash = float(balances.get("USD", 0.0) or 0.0)
+        from backend.agents.narrative import format_simple_portfolio_narrative
+        content_text = format_simple_portfolio_narrative(
+            mode_str=mode_str,
+            ts=ts,
+            total_value=total_value,
+            cash_usd=usd_cash,
+            top_positions=top_positions,
+        )
 
         # Send push notification for portfolio snapshot (LIVE mode only)
         if is_live:
@@ -1541,12 +1998,27 @@ async def _chat_command_impl(
             except Exception:
                 pass  # Don't fail on notification logging issues
 
+        from backend.agents.narrative import build_narrative_structured
+        simple_snapshot_brief = {
+            "as_of": ts,
+            "mode": mode_str,
+            "total_value_usd": float(total_value or 0.0),
+            "cash_usd": usd_cash,
+            "holdings": [
+                {"asset_symbol": str(asset), "qty": float(qty or 0.0), "usd_value": 0.0}
+                for asset, qty in positions.items()
+            ],
+            "recommendations": [],
+            "warnings": [],
+        }
         return JSONResponse(content={
-            "content": "\n".join(lines),
+            "content": content_text,
             "run_id": None,
             "intent": intent_value,
             "status": "COMPLETED",
-            "request_id": request_id
+            "request_id": request_id,
+            "portfolio_snapshot_card_data": simple_snapshot_brief,
+            "narrative_structured": build_narrative_structured(content_text),
         })
 
     # Fallback for unhandled intents

@@ -21,13 +21,18 @@ from backend.core.time import now_iso
 logger = get_logger(__name__)
 
 
-# Safe fallback precision values for common crypto pairs.
-# These are conservative values (stricter than Coinbase minimums) to ensure
-# orders are valid even when the product API is unreachable.
+# DEPRECATED — see docs/trading_truth_contracts.md INV-3.
+# These hardcoded per-asset fallback values are retained only for backward
+# compatibility with callers that have not yet migrated to
+# preflight_engine.py / trade_context.py.  New code must NOT rely on them.
+# Values sourced from these dicts are always ``verified=false`` and must be
+# labelled "(estimated)" in user-facing messages.
+import warnings as _warnings
+
 _COMMON_CRYPTO_DEFAULTS = {
     "base_increment": "0.00000001",
     "quote_increment": "0.01",
-    "base_min_size": "0.01",
+    "base_min_size": "0.00000001",  # unrealistically small — do not use for validation
     "base_max_size": "1000000",
     "quote_min_size": "1.00",
     "quote_max_size": "1000000",
@@ -52,7 +57,6 @@ SAFE_FALLBACK_PRECISION = {
         "base_max_size": "10000000",
         "quote_max_size": "10000000",
     },
-    # Additional common pairs
     "MATIC-USD": {**_COMMON_CRYPTO_DEFAULTS},
     "AVAX-USD": {**_COMMON_CRYPTO_DEFAULTS},
     "DOGE-USD": {**_COMMON_CRYPTO_DEFAULTS, "base_min_size": "1.00"},
@@ -185,13 +189,16 @@ class MarketMetadataService:
         except Exception as e:
             logger.debug("Product catalog lookup failed: %s", str(e)[:100])
 
-        # Step 4b: Try safe fallback precision for common products
+        # Step 4b: DEPRECATED hardcoded fallback — see docs/trading_truth_contracts.md INV-3.
+        # Retained for backward compatibility; new code uses preflight_engine + trade_context.
         if product_id in SAFE_FALLBACK_PRECISION:
             fallback_data = SAFE_FALLBACK_PRECISION[product_id].copy()
             fallback_data["product_id"] = product_id
+            fallback_data["_deprecated_fallback"] = True
             logger.warning(
-                f"Using safe fallback precision for {product_id} "
-                f"(API failed: {api_result.error_message}, no cache available)"
+                "DEPRECATED: Using hardcoded SAFE_FALLBACK_PRECISION for %s "
+                "(API failed: %s, no cache). Migrate to preflight_engine.",
+                product_id, api_result.error_message,
             )
             return MetadataResult(
                 success=True,
