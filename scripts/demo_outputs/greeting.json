@@ -1,0 +1,21 @@
+{
+  "name": "greeting",
+  "text": "Hi",
+  "success": true,
+  "status_code": 200,
+  "response": {
+    "content": "Hi \u2014 I'm your financial assistant. I can analyze markets (crypto & stocks), review your portfolio, or execute trades. Try asking me something!",
+    "suggestions": [
+      "Find the most profitable crypto in the last 24h",
+      "Analyze my portfolio risk and allocation",
+      "Buy $10 of BTC in PAPER mode",
+      "Buy $50 of AAPL stock"
+    ],
+    "run_id": null,
+    "intent": "GREETING",
+    "status": "COMPLETED"
+  },
+  "error": null,
+  "duration_ms": 2076,
+  "assertions": []
+}

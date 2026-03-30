@@ -1,0 +1,83 @@
+{
+  "content": "## Portfolio Analysis (ExecutionMode.LIVE mode)\n*As of: 2026-02-05T03:43:27.983181Z*\n\n**Total Portfolio Value:** $7.41\n**Cash (USD):** $0.06\n\n### Holdings\n| Asset | Quantity | USD Value | Price |\n|-------|----------|-----------|-------|\n| BTC | 0.000103 | $7.35 | $71,287.12 |\n\n### Allocation\n| Asset | % of Portfolio | USD Value |\n|-------|----------------|-----------|\n| BTC | 99.2% | $7.35 |\n| USD | 0.8% | $0.06 |\n\n### Risk Assessment\n**Risk Level:** VERY_HIGH\n- Concentration (Top 1 Asset): 99.2%\n- Concentration (Top 3 Assets): 99.2%\n- Volatility Proxy: 0.71%\n- Diversification Score: 0.02\n\n### Recommendations\n\ud83d\udd34 **High Concentration Risk** (HIGH)\n   Your portfolio has 99.2% in a single asset. Consider diversifying to reduce risk.\n\ud83d\udfe1 **Low Diversification** (MEDIUM)\n   Portfolio is concentrated in few assets. Consider adding positions in different asset types.\n\n### Warnings\n\u26a0\ufe0f Could not fetch order history: name 'asyncio' is not defined\n\n*Data sources: 1 tool calls. Evidence IDs available in run artifacts.*",
+  "run_id": "run_656f3967e46c4583af81a530383fabf6",
+  "intent": "PORTFOLIO_ANALYSIS",
+  "status": "COMPLETED",
+  "portfolio_brief": {
+    "as_of": "2026-02-05T03:43:27.983181Z",
+    "mode": "LIVE",
+    "total_value_usd": 7.4103592907136,
+    "cash_usd": 0.0627958323136,
+    "holdings": [
+      {
+        "asset_symbol": "BTC",
+        "qty": 0.00010307,
+        "usd_value": 7.3475634584,
+        "cost_basis_usd": null,
+        "current_price": 71287.12,
+        "unrealized_pnl_usd": null,
+        "unrealized_pnl_pct": null
+      }
+    ],
+    "allocation": [
+      {
+        "asset_symbol": "BTC",
+        "pct": 99.15259395867224,
+        "usd_value": 7.3475634584
+      },
+      {
+        "asset_symbol": "USD",
+        "pct": 0.8474060413277602,
+        "usd_value": 0.0627958323136
+      }
+    ],
+    "trade_summary": {
+      "window_days": 30,
+      "total_trades": 0,
+      "total_notional_usd": 0.0,
+      "avg_trade_usd": 0.0,
+      "buys": 0,
+      "sells": 0,
+      "top_assets": [],
+      "win_rate": null,
+      "realized_pnl_usd": null,
+      "most_active_day": null
+    },
+    "risk": {
+      "concentration_pct_top1": 99.15259395867224,
+      "concentration_pct_top3": 99.15259395867224,
+      "volatility_proxy": 0.007093638866181029,
+      "drawdown_proxy": null,
+      "risk_level": "VERY_HIGH",
+      "diversification_score": 0.01687631112666732,
+      "liquidity_score": null
+    },
+    "recommendations": [
+      {
+        "category": "REBALANCING",
+        "priority": "HIGH",
+        "title": "High Concentration Risk",
+        "description": "Your portfolio has 99.2% in a single asset. Consider diversifying to reduce risk.",
+        "action_required": true
+      },
+      {
+        "category": "DIVERSIFICATION",
+        "priority": "MEDIUM",
+        "title": "Low Diversification",
+        "description": "Portfolio is concentrated in few assets. Consider adding positions in different asset types.",
+        "action_required": false
+      }
+    ],
+    "warnings": [
+      "Could not fetch order history: name 'asyncio' is not defined"
+    ],
+    "evidence_refs": {
+      "accounts_call_id": "tool_84b10c45ad1c476ab3819efe16b1d855",
+      "prices_call_ids": [],
+      "orders_call_id": null,
+      "additional_call_ids": []
+    },
+    "failure": null
+  },
+  "queried_asset": null
+}

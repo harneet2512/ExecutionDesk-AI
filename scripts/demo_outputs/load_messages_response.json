@@ -1,0 +1,11 @@
+[
+  {
+    "message_id": "msg_720fd07f8cf44fd9848974104f293102",
+    "conversation_id": "conv_19169c72252848b8a7f800d2ec29c21b",
+    "role": "user",
+    "content": "Test message",
+    "run_id": null,
+    "metadata_json": null,
+    "created_at": "2026-02-05T04:35:30.796809Z"
+  }
+]

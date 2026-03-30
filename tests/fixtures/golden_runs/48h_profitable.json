@@ -1,0 +1,31 @@
+{
+  "description": "Golden run for 'Buy the most profitable crypto of the last 48 hours for $3'",
+  "command_text": "Buy the most profitable crypto of the last 48 hours for $3",
+  "expected_artifacts": {
+    "universe_snapshot": {
+      "quote_currency_used": "USD",
+      "products_considered_count": 10,
+      "filters_applied": ["status=online", "quote=USD", "exclude_stablecoins"]
+    },
+    "research_summary": {
+      "window_hours": 48,
+      "resolution": "1h",
+      "min_candles_required": 36
+    },
+    "financial_brief": {
+      "lookback_hours": 48,
+      "granularity": "ONE_HOUR",
+      "valid_count": 3
+    },
+    "strategy_decision": {
+      "chosen_asset": "SOL-USD",
+      "metric": "return"
+    }
+  },
+  "expected_selected_asset": "SOL-USD",
+  "expected_return_range": {
+    "min": 0.20,
+    "max": 0.30
+  },
+  "notes": "SOL has highest return (~24.4%) in the VCR cassette data (95.8 -> 119.4)"
+}

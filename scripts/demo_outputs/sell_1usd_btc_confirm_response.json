@@ -1,0 +1,20 @@
+{
+  "run_id": "run_ba809b732cf3443d89070b3ea769305a",
+  "parsed_intent": {
+    "side": "sell",
+    "budget_usd": 1.0,
+    "metric": "return",
+    "window": "24h",
+    "lookback_hours": 24,
+    "universe": [
+      "BTC-USD"
+    ],
+    "constraints": {},
+    "raw_command": "Confirmed LIVE trade: sell $1.0 of BTC"
+  },
+  "content": "Confirmed. Executing sell $1.0 of BTC...",
+  "intent": "TRADE_EXECUTION",
+  "status": "EXECUTING",
+  "confirmation_id": "conf_ce26e117ddce40d0a2d8bcae508ee1fa",
+  "asset_class": "CRYPTO"
+}

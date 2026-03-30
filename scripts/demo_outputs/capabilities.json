@@ -1,0 +1,15 @@
+{
+  "name": "capabilities",
+  "text": "What can you do?",
+  "success": true,
+  "status_code": 200,
+  "response": {
+    "content": "I can help with:\n\n**Market Analysis**\n\u2022 Price data, returns, volatility, candles\n\u2022 Top gainers/losers, technical indicators\n\u2022 Comparative analysis (BTC vs ETH, AAPL vs MSFT)\n\n**Portfolio & Risk**\n\u2022 Allocation, exposure, P&L\n\u2022 Drawdown, risk metrics, diversification\n\n**Trading - Crypto (Automated)**\n\u2022 Paper/live order execution via Coinbase\n\u2022 Supported: BTC, ETH, SOL, ADA, DOT, MATIC, AVAX, LINK, UNI, ATOM\n\n**Trading - Stocks (Order Tickets)**\n\u2022 Generate order tickets for manual execution\n\u2022 Supported: AAPL, MSFT, NVDA, TSLA, SPY, and more\n\u2022 EOD data via Polygon.io\n\n**App Features**\n\u2022 View runs, telemetry, evaluations\n\u2022 Interpret steps panel and charts\n\n**Example Prompts:**\n\u2022 \"Analyze BTC volatility over the last 24 hours\"\n\u2022 \"What's the most profitable crypto today?\"\n\u2022 \"Buy $10 of ETH in PAPER mode\"\n\u2022 \"Buy $50 of AAPL stock\" (generates order ticket)\n\u2022 \"Show me my portfolio allocation\"\n\u2022 \"What's my current P&L?\"\n",
+    "run_id": null,
+    "intent": "CAPABILITIES_HELP",
+    "status": "COMPLETED"
+  },
+  "error": null,
+  "duration_ms": 2067,
+  "assertions": []
+}

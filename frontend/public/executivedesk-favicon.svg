@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ExecutiveDesk AI">
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#0B0F14"/>
+  <g fill="none" stroke="#F4F7FF" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16 42h32"/>
+    <path d="M22 42v12"/>
+    <path d="M42 42v12"/>
+    <path d="M18 34l10-10 9 7 11-13"/>
+    <path d="M48 18v8"/>
+    <path d="M48 18h-6"/>
+  </g>
+  <g fill="#F4F7FF">
+    <circle cx="18" cy="34" r="2.4"/>
+    <circle cx="28" cy="24" r="2.4"/>
+    <circle cx="37" cy="31" r="2.4"/>
+    <circle cx="48" cy="18" r="2.6"/>
+  </g>
+</svg>

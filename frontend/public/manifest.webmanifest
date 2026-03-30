@@ -1,0 +1,21 @@
+{
+  "name": "ExecutiveDesk AI",
+  "short_name": "ExecutiveDesk",
+  "description": "ExecutiveDesk AI – Agentic Trading Platform",
+  "start_url": "/",
+  "display": "standalone",
+  "icons": [
+    {
+      "src": "/executivedesk-favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.ico",
+      "sizes": "16x16 32x32 48x48",
+      "type": "image/x-icon",
+      "purpose": "any"
+    }
+  ]
+}

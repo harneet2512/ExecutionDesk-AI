@@ -1,0 +1,169 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Grayscale Enterprise Theme Tokens ──────────────────────────────── */
+:root {
+  /* Surfaces */
+  --color-bg:          #f5f5f5;
+  --color-surface:     #ffffff;
+  --color-elevated:    #fafafa;
+  --color-sunken:      #ebebeb;
+
+  /* Borders */
+  --color-border:      #e0e0e0;
+  --color-border-strong:#c7c7c7;
+  --color-border-subtle:#eeeeee;
+
+  /* Text */
+  --color-text-primary:   #1a1a1a;
+  --color-text-secondary: #6b6b6b;
+  --color-text-muted:     #999999;
+  --color-text-on-fill:   #f5f5f5;
+
+  /* Interactive */
+  --color-fill-primary:     #333333;
+  --color-fill-primary-hover:#1a1a1a;
+  --color-fill-secondary:   #e8e8e8;
+  --color-fill-secondary-hover:#d4d4d4;
+  --color-fill-ghost-hover: #f0f0f0;
+  --color-fill-destructive: #8b2020;
+  --color-fill-destructive-hover:#6d1919;
+  --color-focus-ring:       #888888;
+
+  /* Status (muted, dark-safe) */
+  --color-status-success:     #2d7a3a;
+  --color-status-success-bg:  #eef6ef;
+  --color-status-error:       #9b2c2c;
+  --color-status-error-bg:    #fdf0f0;
+  --color-status-warning:     #92680a;
+  --color-status-warning-bg:  #fef9ee;
+  --color-status-info:        #4a6785;
+  --color-status-info-bg:     #eef3f8;
+
+  /* Chart / Tooltip */
+  --chart-tooltip-bg:     #ffffff;
+  --chart-tooltip-border: #e0e0e0;
+  --chart-tooltip-text:   #333333;
+}
+
+.dark {
+  /* Surfaces */
+  --color-bg:          #161616;
+  --color-surface:     #1e1e1e;
+  --color-elevated:    #272727;
+  --color-sunken:      #111111;
+
+  /* Borders */
+  --color-border:      #333333;
+  --color-border-strong:#444444;
+  --color-border-subtle:#262626;
+
+  /* Text */
+  --color-text-primary:   #F4F7FF;
+  --color-text-secondary: rgba(244,247,255,0.85);
+  --color-text-muted:     rgba(244,247,255,0.72);
+  --color-text-on-fill:   #e5e5e5;
+
+  /* Interactive */
+  --color-fill-primary:     #d4d4d4;
+  --color-fill-primary-hover:#e5e5e5;
+  --color-fill-secondary:   #2a2a2a;
+  --color-fill-secondary-hover:#363636;
+  --color-fill-ghost-hover: #262626;
+  --color-fill-destructive: #c53030;
+  --color-fill-destructive-hover:#e53e3e;
+  --color-focus-ring:       #666666;
+
+  /* Status (muted, dark-safe) */
+  --color-status-success:     #68d391;
+  --color-status-success-bg:  rgba(104,211,145,0.12);
+  --color-status-error:       #fc8181;
+  --color-status-error-bg:    rgba(252,129,129,0.12);
+  --color-status-warning:     #f6e05e;
+  --color-status-warning-bg:  rgba(246,224,94,0.10);
+  --color-status-info:        #90cdf4;
+  --color-status-info-bg:     rgba(144,205,244,0.10);
+
+  /* Chart / Tooltip */
+  --chart-tooltip-bg:     #1e1e1e;
+  --chart-tooltip-border: #333333;
+  --chart-tooltip-text:   #e5e5e5;
+}
+
+/* ── Font rendering (crisp on Windows Chrome) ────────────────────── */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  overflow: hidden;
+}
+
+/* Remove sub-pixel rendering artifacts on Windows */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Prevent transform-induced text blur */
+.transform, [class*="translate"], [class*="scale"] {
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+/* ── Utility classes ─────────────────────────────────────────────── */
+@layer utilities {
+  /* Theme surfaces */
+  .theme-bg         { background-color: var(--color-bg); }
+  .theme-surface    { background-color: var(--color-surface); }
+  .theme-elevated   { background-color: var(--color-elevated); }
+  .theme-sunken     { background-color: var(--color-sunken); }
+
+  /* Theme text */
+  .theme-text        { color: var(--color-text-primary); }
+  .theme-text-secondary { color: var(--color-text-secondary); }
+  .theme-text-muted  { color: var(--color-text-muted); }
+
+  /* Theme borders */
+  .theme-border      { border-color: var(--color-border); }
+  .theme-border-strong { border-color: var(--color-border-strong); }
+
+  /* Button variants */
+  .btn-primary {
+    background-color: var(--color-fill-primary);
+    color: var(--color-text-on-fill);
+    &:hover { background-color: var(--color-fill-primary-hover); }
+    &:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
+    &:active { opacity: 0.9; }
+    &:disabled { opacity: 0.4; cursor: not-allowed; }
+  }
+  .btn-secondary {
+    background-color: var(--color-fill-secondary);
+    color: var(--color-text-primary);
+    &:hover { background-color: var(--color-fill-secondary-hover); }
+    &:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
+    &:active { opacity: 0.9; }
+    &:disabled { opacity: 0.4; cursor: not-allowed; }
+  }
+  .btn-ghost {
+    background-color: transparent;
+    color: var(--color-text-secondary);
+    &:hover { background-color: var(--color-fill-ghost-hover); color: var(--color-text-primary); }
+    &:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
+    &:disabled { opacity: 0.4; cursor: not-allowed; }
+  }
+  .btn-destructive {
+    background-color: var(--color-fill-destructive);
+    color: #ffffff;
+    &:hover { background-color: var(--color-fill-destructive-hover); }
+    &:focus-visible { outline: 2px solid var(--color-focus-ring); outline-offset: 2px; }
+    &:disabled { opacity: 0.4; cursor: not-allowed; }
+  }
+}
