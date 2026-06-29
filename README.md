@@ -1,452 +1,217 @@
 # ExecutionDesk AI
+
 <p align="center">
-  <img src="./docs/media/executiondesk-main.gif" alt="ExecutionDesk AI main workflow demo" width="100%" />
+  <img src="./docs/media/executiondesk-demo.gif" alt="ExecutionDesk AI demo" width="100%" />
 </p>
 
 <p align="center">
-  <strong>RAG-Driven Agentic Trading Platform</strong><br />
-  Coinbase-native execution, policy gating, approvals, and observability in one workflow.
+  <strong>Execution infrastructure for prediction markets, crypto, and equities</strong><br />
+  Polymarket CLOB integration, partner client operations, and developer tooling in one platform.
 </p>
 
-<p align="center">
-  <a href="./docs/index.html">Open full-screen auto-playing demo page</a>
-</p>
+---
 
+## What This Is
 
-## Quick Start
+ExecutionDesk is an internal operations platform for a prediction market exchange. It handles what a Forward Deployed Product Engineer builds day-to-day: partner onboarding, trade execution infrastructure, client health monitoring, operational runbooks, and developer-facing APIs.
 
-### Backend
-```bash
-# Install dependencies
-pip install -r requirements.txt
+Built on top of the Polymarket CLOB and Gamma APIs — the same stack a Polymarket FDPE would work with daily.
 
-# Sanity check: Verify no syntax errors (especially useful on Windows)
-python -m compileall backend
+### Platform Overview
 
-# Start backend
-uvicorn backend.api.main:app --reload --port 8000
+| Home Dashboard | Markets Browser | Chat Execution |
+|:-:|:-:|:-:|
+| ![Home](frontend/screenshot-vercel-home.png) | ![Markets](frontend/screenshot-vercel-markets.png) | ![Chat](frontend/screenshot-vercel-chat.png) |
+
+| Client Operations | API Documentation | Evaluations |
+|:-:|:-:|:-:|
+| ![Clients](frontend/screenshot-vercel-clients.png) | ![Docs](frontend/screenshot-vercel-docs.png) | ![Evals](frontend/screenshot-vercel-evals.png) |
+
+| Runs (DAG Execution) | Performance Telemetry | Operations |
+|:-:|:-:|:-:|
+| ![Runs](frontend/screenshot-vercel-runs.png) | ![Performance](frontend/screenshot-vercel-perf.png) | ![Ops](frontend/screenshot-vercel-ops.png) |
+
+---
+
+## Polymarket Integration
+
+Direct integration with Polymarket's CLOB and Gamma APIs — limit orders, order book streaming, position tracking, market discovery.
+
+```python
+# examples/python/place_limit_order.py — standalone, no app dependency
+import httpx
+
+resp = httpx.post("https://clob.polymarket.com/order", json={
+    "tokenID": token_id,
+    "side": "BUY",
+    "price": "0.55",      # probability: 55%
+    "size": "100",         # 100 shares
+    "type": "GTC",         # Good-Til-Cancelled
+}, headers={"POLY_API_KEY": api_key, "POLY_API_SECRET": api_secret})
 ```
 
-Backend runs on http://localhost:8000
+**What's implemented:**
+- `backend/providers/polymarket_clob.py` — BrokerProvider for CLOB order placement, positions, balances, fills, order book
+- `backend/providers/polymarket_market_data.py` — Market search (Gamma API), price history, order book depth, trade feed
+- `backend/orchestrator/nodes/prediction_*.py` — DAG nodes for prediction market research, signals, and risk
+- `backend/agents/intent_parser.py` — NL parsing: "buy yes on Trump winning 2028 for $5" -> structured trade intent
+- `frontend/components/ProbabilityChart.tsx` — Polymarket-style area chart with gradient fills
+- `frontend/components/OrderBook.tsx` — Real-time bid/ask display with depth bars
+- `frontend/app/markets/page.tsx` — Market browser with search, filters, probability charting
 
-**Database migrations** are automatically applied on startup via `init_db()`.
+**Standalone integration examples** in [`examples/`](./examples/):
 
-**Note for Windows**: If you see "Python-dotenv could not parse statement starting at line X" warnings, check your `.env` file. Ensure all lines follow the format `KEY=VALUE` (no `set`, `$env:`, or `export` prefixes). Comments should be on their own line starting with `#`.
+| Script | What It Does |
+|--------|-------------|
+| `python/search_markets.py` | Search prediction markets via Gamma API |
+| `python/stream_orderbook.py` | WebSocket order book streaming |
+| `python/place_limit_order.py` | Authenticated GTC limit order on CLOB |
+| `python/monitor_positions.py` | Fetch positions + compute unrealized P&L |
+| `python/price_history.py` | Historical probability data + ASCII chart |
+| `typescript/websocket_client.ts` | Browser-ready WS client with auto-reconnect |
 
-### Frontend
-```bash
-cd frontend
-npm install
-npm run dev
-```
+---
 
-Frontend runs on http://localhost:3000
+## Client Operations
 
-### Run Tests
-```bash
-python -m pytest -v
-```
+The FDPE manages partner relationships. This platform tracks client health, surfaces degradation, and provides operational playbooks.
 
-## Database Migrations
+- **Health scoring** (0-100) with classification: healthy / good / at_risk / churning / inactive
+- **Scoring model**: activity 30% + success rate 25% + volume trend 20% + error frequency 15% + feature adoption 10%
+- **Alert triggers**: 7-day inactivity, error spike, 50%+ volume drop, repeated policy blocks
+- **Issue tracking** with threaded comments, priority, and linked run IDs
+- **Runbooks**: 8 pre-populated operational guides (insufficient balance, order timeout, rate limiting, etc.)
 
-**Migrations are automatically applied on backend startup** via `init_db()`. No manual migration commands are needed.
+| ![Clients](frontend/screenshot-vercel-clients.png) | ![Positions](frontend/screenshot-vercel-positions.png) |
+|:-:|:-:|
+| Client dashboard with health gauges | Position tracking |
 
-### Check Migration Status
+---
 
-```bash
-curl http://localhost:8000/api/v1/ops/health | jq '.migrations'
-```
+## Developer Platform
 
-### If You See "Database Setup Required" in the UI
+Partner-facing APIs with auth, webhooks, and interactive docs — the kind of tooling an FDPE ships to help partners self-serve.
 
-The frontend will display a health gate with actionable instructions if pending migrations are detected.
+- **API keys**: SHA256 hash storage, permission scoping (read/trade/admin), rotation with 24h grace period
+- **Webhooks**: HMAC-signed payloads, async delivery with retry, dead letter queue after 3 failures
+- **WebSocket streaming**: Real-time prices, order book, trades per symbol
+- **Interactive docs**: Endpoint reference with Python/JS/cURL snippets, auth quickstart, error reference
 
-**To apply migrations:**
-1. Stop the backend server (Ctrl+C)
-2. Restart it:
-   ```bash
-   python -m uvicorn backend.api.main:app --port 8000
-   ```
-3. Migrations will apply automatically on startup
-4. Refresh the frontend - the app should load normally
+Events: `trade.filled`, `trade.failed`, `run.completed`, `approval.needed`, `policy.blocked`, `alert.triggered`
 
-**Troubleshooting:**
-- If migrations fail, check the backend logs for errors
-- Ensure the database file is not locked by another process
-- Check that the `backend/db/migrations/` directory exists and contains `.sql` files
-
-### Health and Capabilities Endpoints
-
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /health` | Root health check: DB readiness, schema health, pending migrations, LIVE trading flag |
-| `GET /api/v1/ops/health` | Deep health check: full migration list, provider config, DB path |
-| `GET /api/v1/ops/capabilities` | Feature flags: LIVE/PAPER enabled, news/insights status, DB readiness |
-
-The frontend fetches both `/ops/health` and `/ops/capabilities` on startup and gates the
-UI accordingly:
-- If DB is unhealthy or migrations are pending: shows "Database Setup Required" screen.
-- If LIVE trading is disabled: shows an amber banner and hides LIVE Confirm buttons.
-
-
-### Configure OpenTelemetry (Optional)
-
-To export telemetry to an OTLP collector:
-
-```bash
-export OTLP_ENDPOINT=http://localhost:4317  # OTLP gRPC endpoint
-export SERVICE_NAME=executivedesk-ai
-export SERVICE_VERSION=1.0.0
-```
-
-If `OTLP_ENDPOINT` is not set, spans are logged to console (or silently dropped during pytest).
-
-### View Trades/Evals/Telemetry in UI
-
-1. Navigate to `http://localhost:3000/chat`
-2. Use the **sidebar tabs** to switch between:
-   - **Chats**: Conversation threads
-   - **Trades**: Run history (execution mode, status, timestamps)
-   - **Evals**: Evaluation results (placeholder)
-   - **Telemetry**: Per-run observability metrics (tool calls, events, errors, duration)
-
-3. Start a new conversation and try: "Buy me the most profitable crypto of the last 24 hours for $10"
-
-## Docker Quick Start
-
-```bash
-docker compose up --build
-# Frontend: http://localhost:3000
-# Backend:  http://localhost:8000
-# API Docs: http://localhost:8000/docs
-```
-
-Or use the helper script: `bash scripts/docker-start.sh`
+---
 
 ## Architecture
 
-- **Backend**: FastAPI (Python) with DAG-based orchestrator, policy engine, and multi-provider execution
-- **Frontend**: Next.js 15 (React 18, TypeScript, Tailwind) workspace layout with collapsible chat panel
-- **Database**: SQLite (local dev) or PostgreSQL (production) with 36 migration files
-- **Providers**: Coinbase CDP (crypto), Polygon (stocks), Polymarket CLOB (prediction markets), paper trading
-- **NLP**: Hybrid regex + LLM intent classifier (OpenAI gpt-4o-mini with structured output, regex fallback)
-
-## Key Features
-
-**Trading Engine**
-- DAG-based run execution (research > signals > risk > strategy > proposal > policy > approval > execution > post-trade > eval)
-- Multi-asset support: crypto, stocks, prediction markets
-- Policy engine with deterministic safety checks
-- Human approval workflow for LIVE trades
-- Paper trading with realistic order lifecycle
-
-**Prediction Markets (Polymarket)**
-- CLOB API integration (limit orders, positions, order book)
-- Market search and discovery with probability charting
-- Natural language commands: "buy yes on Trump winning 2028 for $5"
-- Prediction-specific DAG nodes (research, signals, risk)
-
-**Client Operations**
-- Client health scoring (0-100) with classification (healthy/at_risk/churning)
-- Issue tracking with threaded comments
-- Alert system (inactivity, error spikes, volume drops)
-- Runbook/playbook system with 8 pre-populated operational guides
-
-**Developer Platform**
-- API key management (SHA256 hash storage, permission scoping, rotation with 24h grace)
-- Webhook subscriptions with HMAC signatures and dead letter queue
-- WebSocket market data streaming (prices, order book, trades)
-- Interactive API documentation with code snippets (Python/JS/cURL)
-
-**Frontend**
-- Workspace layout: icon rail + route-driven pages + collapsible chat panel
-- Home dashboard with quick stats and actions
-- 8 sections: Home, Chats, Trades, Evals, Telemetry, Operations, Markets, Clients
-- Real-time SSE streaming, order book, price ticker
-- Dark/light mode, loading skeletons, error boundaries per section
-
-**Enterprise**
-- PostgreSQL support with connection pooling and 5 analytical query endpoints
-- Structured JSON logging with automatic secret redaction
-- OpenTelemetry tracing (OTLP exporter)
-- Prometheus metrics at `/api/v1/metrics`
-- 16 built-in evaluation modules (hallucination detection, agent quality, grounding)
-- 185+ automated tests (pytest + Vitest)
-
-## LIVE Trading RUNBOOK
-
-### Prerequisites
-
-**⚠️ CRITICAL: Rotate Keys First**
-If keys were previously shared, rotate them before enabling LIVE trading:
-- Coinbase: https://portal.cdp.coinbase.com/
-- OpenAI: https://platform.openai.com/api-keys
-
-### 1. Configure Coinbase Private Key
-
-**Option A: File-based (Recommended)**
-```bash
-# Create secrets directory (already exists)
-# Create PEM file
-echo "-----BEGIN EC PRIVATE KEY-----
-<YOUR_PRIVATE_KEY_DATA>
------END EC PRIVATE KEY-----" > secrets/coinbase_private_key.pem
-
-# Update .env
-COINBASE_API_PRIVATE_KEY_PATH=./secrets/coinbase_private_key.pem
+```
+FastAPI (Python)          Next.js 15 (React 18, TypeScript, Tailwind)
+├── api/routes/           ├── app/ (17 pages)
+│   ├── chat.py           │   ├── chat/         (NL command interface)
+│   ├── markets.py        │   ├── markets/       (prediction market browser)
+│   ├── clients.py        │   ├── clients/       (partner health dashboard)
+│   ├── runs.py           │   ├── runs/          (DAG execution history)
+│   ├── api_keys.py       │   ├── docs/          (interactive API docs)
+│   ├── webhooks.py       │   ├── evals/         (evaluation results)
+│   ├── analytics.py      │   ├── ops/           (system health + runbooks)
+│   └── ws_market_data.py │   └── performance/   (telemetry)
+├── providers/            ├── components/ (41 components)
+│   ├── polymarket_clob   │   ├── ProbabilityChart
+│   ├── polymarket_market │   ├── OrderBook
+│   ├── coinbase_cdp      │   ├── ClientHealthGauge
+│   ├── polygon           │   ├── PredictionMarketCard
+│   └── paper_trading     │   └── ...
+├── orchestrator/         └── lib/
+│   ├── runner.py (DAG)       ├── api.ts (REST client)
+│   └── nodes/ (16 nodes)     └── useWebSocket.ts
+├── services/
+│   ├── client_health.py
+│   ├── webhook_dispatcher.py
+│   └── api_key_auth.py
+├── db/ (SQLite/PostgreSQL, 36 migrations)
+└── evals/ (16 evaluation modules)
 ```
 
-**Option B: Environment Variable**
-```bash
-# Use single-line escaped format in .env
-COINBASE_API_PRIVATE_KEY="-----BEGIN EC PRIVATE KEY-----\n<KEY_DATA>\n-----END EC PRIVATE KEY-----"
+**DAG execution pipeline:**
+```
+research > signals > news > risk > strategy > proposal > policy_check > approval > execution > post_trade > eval
 ```
 
-### 2. Enable LIVE Trading
+Prediction markets use specialized nodes: `prediction_research > prediction_signals > prediction_risk > ...`
 
-Update `.env`:
-```bash
-# Enable LIVE trading
-ENABLE_LIVE_TRADING=true
+---
 
-# REQUIRED: Use real market data (not stub)
-MARKET_DATA_MODE=coinbase
-
-# Set safety cap (default: $20)
-LIVE_MAX_NOTIONAL_USD=20.0
-
-# Coinbase credentials
-COINBASE_API_KEY_NAME=organizations/.../apiKeys/...
-COINBASE_API_PRIVATE_KEY_PATH=./secrets/coinbase_private_key.pem
-```
-
-### 3. Start Backend
+## Quick Start
 
 ```bash
-python -m uvicorn backend.api.main:app --reload --port 8000
+# Option 1: Docker (recommended)
+docker compose up --build
+# Frontend: http://localhost:3000  |  Backend: http://localhost:8000
+
+# Option 2: Manual
+pip install -r requirements.txt
+uvicorn backend.api.main:app --reload --port 8000
+
+cd frontend && npm install && npm run dev
 ```
 
-**Expected startup log:**
-```
-⚠️  LIVE TRADING ENABLED WITH REAL KEYS DETECTED ⚠️
-    Ensure keys were rotated if previously shared.
-    Secrets are never logged by this application.
-```
-
-### 4. Verify Configuration
-
-```bash
-curl http://localhost:8000/api/v1/ops/health | jq .config
-```
-
-**Expected output:**
-```json
-{
-  "enable_live_trading": true,
-  "execution_mode_default": "PAPER",
-  "market_data_mode": "coinbase",
-  "coinbase_private_key_source": "path",
-  "live_max_notional_usd": 20.0
-}
-```
-
-### 5. Safe LIVE Trial
-
-**Test with small order (under $20 cap):**
-```bash
-curl -X POST http://localhost:8000/api/v1/chat/command \
-  -H "Content-Type: application/json" \
-  -H "X-Dev-Tenant: t_default" \
-  -d '{"text": "buy $5 of BTC", "budget_usd": 5.0, "mode": "LIVE"}'
-```
-
-**Monitor execution:**
-```bash
-# Check run status
-curl http://localhost:8000/api/v1/runs | jq
-
-# View telemetry
-curl http://localhost:8000/api/v1/telemetry/runs/<run_id> | jq
-```
-
-### Safety Features
-
-- ✅ **Hard Order Cap**: LIVE orders limited to $20 by default (configurable via `LIVE_MAX_NOTIONAL_USD`)
-- ✅ **Market Data Enforcement**: LIVE mode requires `MARKET_DATA_MODE=coinbase` (not stub)
-- ✅ **Startup Warning**: Banner displayed when LIVE trading enabled with real keys
-- ✅ **Secret Protection**: No key material in logs, errors, or API responses
-- ✅ **Config Sanity Check**: `/api/v1/ops/health` shows configuration (no secrets)
-
-### Verification Commands
-
-```bash
-# Check compilation
-python -m compileall backend
-
-# Verify no dotenv warnings
-python -c "import backend.api.main; print('✓ Import successful')"
-
-# Run tests
-python -m pytest -v
-
-# Grep for safety features
-Select-String -Path "backend\**\*.py" -Pattern "LIVE_MAX_NOTIONAL_USD"
-Select-String -Path "backend\services\market_data_provider.py" -Pattern "LIVE trading requires"
-```
-
-### Troubleshooting
-
-**"LIVE trading is disabled"**
-- Set `ENABLE_LIVE_TRADING=true` in `.env`
-
-**"LIVE trading requires MARKET_DATA_MODE=coinbase"**
-- Set `MARKET_DATA_MODE=coinbase` in `.env` (not `stub`)
-
-**"LIVE order blocked: notional $X exceeds LIVE_MAX_NOTIONAL_USD"**
-- Reduce order size or increase `LIVE_MAX_NOTIONAL_USD` in `.env`
-
-**"Coinbase private key not configured"**
-- Set `COINBASE_API_PRIVATE_KEY_PATH` or `COINBASE_API_PRIVATE_KEY` in `.env`
-
-## Observability
-
-### Prometheus Metrics
-
-The platform exposes Prometheus-compatible metrics at `/api/v1/metrics`.
-
-**Key Metrics:**
-- `run_success_total{mode}` - Successful runs by mode (LIVE/PAPER/REPLAY)
-- `run_failure_total{mode,reason}` - Failed runs with reason codes
-- `node_latency_seconds{node}` - Node execution latency histogram
-- `external_api_latency_seconds{provider,endpoint}` - External API latency
-- `coinbase_429_total` - Coinbase rate limit hits
-- `ranked_assets_count` - Assets successfully ranked
-- `dropped_assets_total{reason}` - Assets dropped from ranking by reason
-
-**Example Queries:**
-```promql
-# Success rate over last hour
-rate(run_success_total[1h]) / (rate(run_success_total[1h]) + rate(run_failure_total[1h]))
-
-# P95 node latency
-histogram_quantile(0.95, rate(node_latency_seconds_bucket[5m]))
-
-# Coinbase 429 rate
-rate(coinbase_429_total[1h])
-```
-
-**JSON Metrics (debugging):**
-```bash
-curl http://localhost:8000/api/v1/metrics/json | jq
-```
-
-### OpenTelemetry Tracing
-
-Traces are exported via OTLP (configurable via `OTLP_ENDPOINT`).
-
-**Span Hierarchy:**
-- `execute_run` (root span)
-  - `node.research` - Market data fetching
-  - `node.signals` - Signal generation
-  - `node.risk` - Risk assessment
-  - `node.strategy` - Asset selection
-  - ... (10 nodes total)
-
-**Node Span Attributes:**
-- `run_id`, `tenant_id`, `node_name`, `mode`
-- `external_calls_count`, `rate_limit_hits`, `cache_hits`
-- `ranked_assets_count`, `dropped_assets_count`
-
-### Structured Logging
-
-All logs are JSON-formatted with automatic secret redaction.
-
-**Log Fields:**
-- `timestamp`, `level`, `message`, `module`, `function`
-- Correlation IDs: `run_id`, `trace_id`, `request_id`, `tenant_id`
-- Node context: `node`, `event`, `elapsed_ms`, `error_class`
-
-**Secret Redaction:**
-- API keys, private keys, JWT tokens, passwords automatically redacted
-- Patterns matched: `api_key=*`, `sk-*`, `-----BEGIN.*PRIVATE KEY-----`, `eyJ*.*.*`
-
-## Evaluations
-
-### Built-in Evals (16 deep evals)
-
-**Hallucination Detection:**
-- `evidence_coverage` - All claims have evidence artifacts
-- `claim_faithfulness` - Numeric claims match artifacts
-- `tool_use_truthfulness` - Tool calls actually exist in DB
-- `uncertainty_discipline` - Empty rankings produce failure artifacts
-
-**Agent Quality:**
-- `plan_completeness` - Required nodes executed
-- `loop_thrash` - Tool calls bounded (no infinite loops)
-- `constraint_respect` - Caps/allowlists enforced
-- `empty_rankings_never_silent` - Failures properly documented
-- `rate_limit_resilience` - Backoff/retry behavior correct
-
-**Other Evals:**
-- `action_grounding`, `budget_compliance`, `ranking_correctness`
-- `numeric_grounding`, `execution_quality`, `tool_reliability`
-- `determinism_replay`, `policy_invariants`, `ux_completeness`
-
-### Running Evals
-
-Evals run automatically after each run. View results:
-
-```bash
-# Get all evals for a run
-curl http://localhost:8000/api/v1/evals/run/{run_id} | jq
-
-# Check for failures
-curl http://localhost:8000/api/v1/evals/run/{run_id} | jq '.failures'
-```
+Database migrations auto-apply on startup. Copy `.env.example` to `.env` for configuration.
 
 ## Testing
 
-### Run Tests
-
 ```bash
-# All tests
-python -m pytest -v
+# Backend (185+ tests)
+pytest tests/ -v --tb=short
 
-# Unit tests only (fast)
-python -m pytest tests/test_research_rankings.py tests/test_intent_classification.py -v
+# Frontend
+cd frontend && npm run lint && npx next build
 
-# Integration tests
-python -m pytest tests/test_confirmation_flow.py -v
-
-# Golden run tests
-python -m pytest tests/test_golden_runs.py -v
-
-# Secret redaction tests
-python -m pytest tests/test_secret_redaction.py -v
+# Single test
+pytest tests/test_polymarket_provider.py -v
 ```
 
-### VCR-Style Fixtures
+## Stats
 
-Tests use recorded HTTP responses for determinism:
-- Fixtures: `tests/fixtures/vcr_cassettes/*.json`
-- Golden runs: `tests/fixtures/golden_runs/*.json`
+| Metric | Count |
+|--------|-------|
+| API routes | 33 |
+| Frontend pages | 17 |
+| React components | 41 |
+| DAG nodes | 16 |
+| Database migrations | 36 |
+| Evaluation modules | 16 |
+| Automated tests | 185+ |
+| Providers | 5 (Polymarket CLOB, Polymarket Market Data, Coinbase CDP, Polygon, Paper) |
 
-### Verification Script
+## Configuration
 
-Run end-to-end verification:
+Copy `.env.example` and set:
 
 ```bash
-# Start backend first
-uvicorn backend.api.main:app --port 8000
+# Required
+OPENAI_API_KEY=...
+DATABASE_URL=sqlite:///./enterprise.db
 
-# Then run verification
-python scripts/verify_commands.py
+# Polymarket (for CLOB trading)
+POLYMARKET_API_KEY=...
+POLYMARKET_API_SECRET=...
+
+# Coinbase (for crypto)
+COINBASE_API_KEY_NAME=...
+COINBASE_API_PRIVATE_KEY_PATH=./secrets/coinbase_private_key.pem
+
+# Safety
+EXECUTION_MODE_DEFAULT=PAPER
+DEMO_SAFE_MODE=1
+LIVE_MAX_NOTIONAL_USD=20.0
 ```
 
-Checks:
-- Health check
-- Conversation creation
-- Trade confirmation flow
-- Artifact generation (universe_snapshot, research_summary, financial_brief)
-- Eval execution
-- Prometheus metrics
+## Observability
+
+- **Prometheus metrics** at `/api/v1/metrics` (success/failure rates, node latency, rate limit hits)
+- **OpenTelemetry tracing** via OTLP exporter (per-node spans with run context)
+- **Structured JSON logging** with automatic secret redaction
+- **16 evaluation modules**: hallucination detection, agent quality, grounding, budget compliance, execution quality
+
+## License
+
+MIT
