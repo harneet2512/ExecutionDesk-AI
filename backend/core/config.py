@@ -1,10 +1,19 @@
 """Configuration management."""
+import logging
 import os
-from typing import Optional, List
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
 load_dotenv(override=False)
+
+logger = logging.getLogger(__name__)
+
+# Insecure default secrets that MUST be changed in production
+_DEV_SECRET_DEFAULTS = frozenset({
+    "dev-secret-key-change-in-production",
+    "dev-jwt-secret-change-in-production",
+})
 
 
 class Settings(BaseSettings):
@@ -19,6 +28,8 @@ class Settings(BaseSettings):
     # Database
     database_url: str = os.getenv("DATABASE_URL") or os.getenv("TEST_DATABASE_URL", "sqlite:///./enterprise.db")
     test_database_url: Optional[str] = os.getenv("TEST_DATABASE_URL")
+    db_pool_min: int = int(os.getenv("DB_POOL_MIN", "2"))
+    db_pool_max: int = int(os.getenv("DB_POOL_MAX", "10"))
     
     # API
     api_secret_key: str = os.getenv("API_SECRET_KEY", "dev-secret-key-change-in-production")
@@ -112,9 +123,19 @@ class Settings(BaseSettings):
     service_version: str = os.getenv("SERVICE_VERSION", "0.1.0")
     otlp_endpoint: Optional[str] = os.getenv("OTLP_ENDPOINT")
     
+    # Polymarket (prediction markets)
+    polymarket_api_key: Optional[str] = os.getenv("POLYMARKET_API_KEY")
+    polymarket_api_secret: Optional[str] = os.getenv("POLYMARKET_API_SECRET")
+    polymarket_clob_url: str = os.getenv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com")
+    polymarket_gamma_url: str = os.getenv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com")
+    polymarket_max_notional_usd: float = float(os.getenv("POLYMARKET_MAX_NOTIONAL_USD", "50.0"))
+
     # OpenAI (optional, for LLM features)
     openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # Cheapest cost-effective model
+
+    # CORS (comma-separated origins; defaults to localhost in main.py)
+    cors_allowed_origins: Optional[str] = os.getenv("CORS_ALLOWED_ORIGINS")
 
     # E2E diagnostics: prints run_id/request_id to logs for Playwright correlation
     debug_trade_diagnostics: bool = os.getenv("DEBUG_TRADE_DIAGNOSTICS", "0").lower() in ("1", "true", "yes")
@@ -123,11 +144,38 @@ class Settings(BaseSettings):
 _settings: Optional[Settings] = None
 
 
+def validate_secrets(s: "Settings") -> None:
+    """Check for insecure default secrets and log CRITICAL warnings.
+
+    In development (ENABLE_DEV_AUTH=true or TEST_AUTH_BYPASS=true) the dev
+    defaults are tolerated silently. In production, using them is a
+    security vulnerability and must be surfaced loudly.
+    """
+    is_dev = s.enable_dev_auth or s.test_auth_bypass
+    if is_dev:
+        return  # Dev/test mode -- insecure defaults are expected
+
+    warnings: list[str] = []
+    if s.api_secret_key in _DEV_SECRET_DEFAULTS:
+        warnings.append(
+            "API_SECRET_KEY is set to an insecure default. "
+            "Set a strong, unique secret via the API_SECRET_KEY env var."
+        )
+    if s.jwt_secret in _DEV_SECRET_DEFAULTS:
+        warnings.append(
+            "JWT_SECRET is set to an insecure default. "
+            "Set a strong, unique secret via the JWT_SECRET env var."
+        )
+    for msg in warnings:
+        logger.critical("SECURITY: %s", msg)
+
+
 def get_settings() -> Settings:
     """Get settings singleton."""
     global _settings
     if _settings is None:
         _settings = Settings()
+        validate_secrets(_settings)
     return _settings
 
 

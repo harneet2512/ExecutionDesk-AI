@@ -82,7 +82,7 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
                 });
             }
         } catch (e) {
-            console.error("Failed to fetch artifacts", e);
+            if (process.env.NODE_ENV === 'development') console.error("Failed to fetch artifacts", e);
             setArtifacts([]);
             setEvidence([]);
             setError("Artifact data could not be loaded. The run may not have emitted artifacts or the endpoint returned malformed data.");
@@ -128,7 +128,6 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
                         <h3 className="text-lg font-medium mb-2">Execution Plan</h3>
                         <div className="text-sm theme-text-secondary">
                             The execution plan is determined statically by the DAG.
-                            {/* TODO: Show static plan or specific plan artifact */}
                         </div>
                     </div>
                 );
@@ -217,7 +216,7 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
     };
 
     return (
-        <div className="fixed inset-y-0 right-0 w-96 theme-surface shadow-2xl border-l theme-border transform transition-transform duration-300 z-50 flex flex-col">
+        <div className="fixed inset-y-0 right-0 w-96 theme-surface shadow-2xl border-l theme-border transform transition-transform duration-300 z-50 flex flex-col" role="dialog" aria-modal="true" aria-label="Run artifacts">
             {/* Header */}
             <div className="px-4 py-3 border-b theme-border flex items-center justify-between">
                 <h2 className="text-sm font-bold theme-text">
@@ -226,8 +225,9 @@ export default function ArtifactPanel({ runId, isOpen, onClose }: ArtifactPanelP
                 <button
                     onClick={onClose}
                     className="p-1 rounded hover:bg-[var(--color-fill-ghost-hover)] theme-text-secondary"
+                    aria-label="Close artifact panel"
                 >
-                    ✕
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
             </div>
 

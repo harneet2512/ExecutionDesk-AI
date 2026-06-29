@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev test clean
+.PHONY: bootstrap dev test test-cov clean
 
 bootstrap:
 	@bash scripts/bootstrap.sh
@@ -8,6 +8,9 @@ dev:
 
 test:
 	@bash scripts/test.sh
+
+test-cov:
+	@bash scripts/test.sh --cov
 
 clean:
 	@rm -rf .venv

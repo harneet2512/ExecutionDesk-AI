@@ -133,7 +133,7 @@ class ParsedTradeCommand(BaseModel):
     is_most_profitable: bool = False
     lookback_hours: float = 24.0  # Supports fractional hours for minute-level lookbacks
     raw_text: str = ""
-    asset_class: Literal["CRYPTO", "STOCK", "AMBIGUOUS"] = "CRYPTO"  # Default to crypto for backwards compatibility
+    asset_class: Literal["CRYPTO", "STOCK", "PREDICTION_MARKET", "AMBIGUOUS"] = "CRYPTO"  # Default to crypto for backwards compatibility
     # Extended selection criteria fields
     selection_criteria: Optional[str] = None  # "highest_performing", "best_return", "momentum", etc.
     threshold_pct: Optional[float] = None  # Percentage threshold (e.g., "up 20%" -> 20.0)
@@ -147,6 +147,8 @@ class ParsedTradeCommand(BaseModel):
     # Portfolio-reference parsing
     is_portfolio_reference: bool = False
     portfolio_ref_type: Optional[str] = None  # "largest_holding", etc.
+    # Prediction market query
+    market_query: Optional[str] = None
 
 
 class AmountMode(str, Enum):
@@ -277,14 +279,15 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
             # Emit telemetry for timeframe parsing
             emit_timeframe_parse_telemetry(parse_result, text)
     except Exception:
-        # Fallback to legacy parsing if timeframe_parser fails
-        time_pattern = r'(?:last\s+)?(\d+)\s*(min(?:ute)?s?|m|hours?|h|days?|d|weeks?|w)\b'
+        # Fallback to regex-based time parsing (same patterns as timeframe_parser
+        # but without the import). Covers relative expressions.
+        time_pattern = r'(?:last|past|previous)?\s*(\d+)\s*(min(?:ute)?s?|m|hours?|h|days?|d|weeks?|w|months?|mo)\s*(?:ago)?\b'
         time_match = re.search(time_pattern, text_lower)
-        
+
         if time_match:
             value = int(time_match.group(1))
             unit = time_match.group(2).lower()
-            
+
             if unit.startswith('min') or unit == 'm':
                 result.lookback_hours = max(0.1, value / 60.0)
             elif unit.startswith('hour') or unit == 'h':
@@ -293,16 +296,8 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
                 result.lookback_hours = float(value * 24)
             elif unit.startswith('week') or unit == 'w':
                 result.lookback_hours = float(value * 24 * 7)
-        else:
-            # Legacy simple patterns as fallback
-            if 'last 48' in text_lower or '48 hour' in text_lower or '48h' in text_lower or '2 day' in text_lower:
-                result.lookback_hours = 48.0
-            elif 'last 24' in text_lower or '24 hour' in text_lower or '24h' in text_lower:
-                result.lookback_hours = 24.0
-            elif 'last 7 day' in text_lower or '7 day' in text_lower or '1 week' in text_lower:
-                result.lookback_hours = 168.0
-            elif 'last hour' in text_lower or '1 hour' in text_lower or '1h' in text_lower:
-                result.lookback_hours = 1.0
+            elif unit.startswith('month') or unit == 'mo':
+                result.lookback_hours = float(value * 24 * 30)
 
     # Parse amount mode qualifiers first.
     # Interpret "sell all / close / exit / liquidate" and
@@ -465,6 +460,41 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
         # No symbol found, no keyword - default to CRYPTO for backwards compatibility
         result.asset_class = "CRYPTO"
 
+    # === Prediction market detection ===
+    prediction_keywords = [
+        "prediction", "polymarket", "probability", "odds",
+        "yes on", "no on", "bet on", "will ", "chance of",
+        "i think", "wins the", "win the", "winning",
+    ]
+    is_prediction = any(kw in text_lower for kw in prediction_keywords)
+    if is_prediction:
+        result.asset_class = "PREDICTION_MARKET"
+
+        # Extract market query by stripping action words, outcome words, and amounts
+        query = text_lower
+        # Remove action words
+        for word in ['buy', 'sell', 'purchase', 'invest', 'what\'s the', 'what are the',
+                     'how likely', 'probability of', 'odds of', 'chance of',
+                     'bet on', 'yes on', 'no on', 'i think']:
+            query = query.replace(word, '')
+        # Remove amount patterns
+        query = re.sub(r'\$\s*\d+(?:\.\d+)?', '', query)
+        query = re.sub(r'\d+(?:\.\d+)?\s*(?:dollars?|usd)', '', query)
+        query = re.sub(r'for\s+\$?\d+', '', query)
+        # Remove outcome words
+        for word in ['yes', 'no']:
+            query = re.sub(rf'\b{word}\b', '', query)
+        # Remove common filler words
+        for word in ['on', 'the', 'of', 'is', 'a', 'an', 'will', 'that', 'paper', 'for']:
+            query = re.sub(rf'\b{word}\b', '', query)
+        # Remove punctuation
+        query = query.replace('?', '').replace('!', '')
+        # Clean up whitespace
+        query = re.sub(r'\s+', ' ', query).strip()
+
+        if query:
+            result.market_query = query
+
     # === Determine execution mode ===
     # 1. Check for explicit paper/simulation keywords
     if any(keyword in text_lower for keyword in ['paper', 'simulation', 'test trade']):
@@ -524,6 +554,35 @@ def parse_trade_command(text: str) -> ParsedTradeCommand:
                     break
             except Exception:
                 pass
+
+    # --- LLM enhancement for low-confidence parses ---
+    # If the regex parser couldn't identify the asset or side, try the LLM
+    # classifier to fill in the gaps. This handles typos, alternative phrasings,
+    # and ambiguous commands that regex can't catch.
+    _needs_llm = (
+        result.asset is None
+        and not result.is_most_profitable
+        and not result.is_sell_last_purchase
+        and not result.is_portfolio_reference
+        and result.side is not None  # Has a side but no asset = ambiguous
+    )
+    if _needs_llm:
+        try:
+            from backend.agents.llm_intent_classifier import classify_with_llm, _get_openai_key
+            if _get_openai_key():
+                _llm = classify_with_llm(text)
+                if _llm.confidence >= 0.7:
+                    if _llm.asset and not result.asset:
+                        result.asset = _llm.asset
+                        result.venue_symbol = f"{_llm.asset}-USD"
+                        result.resolution_source = "llm_classifier"
+                    if _llm.side and not result.side:
+                        result.side = _llm.side.lower()
+                    if _llm.amount_usd and result.amount_usd is None:
+                        result.amount_usd = _llm.amount_usd
+                        result.amount_mode = AmountMode.QUOTE_USD.value
+        except Exception:
+            pass  # LLM failure is non-fatal
 
     # Enforce multi-asset semantics for "sell all holdings/everything/positions".
     # Keep single-asset semantics for "sell all of <symbol>" when an asset is explicitly identified.

@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
 } from 'recharts';
 import {
   fetchEvalDashboard,
@@ -14,8 +14,11 @@ import {
   EvalRunSummary,
   EvalSummary,
 } from '@/lib/api';
+import { fmtNumber, fmtPercent, fmtTimeAgo } from '@/lib/format';
+import { CHART_COLORS, AXIS_STYLE, GRID_STYLE, TOOLTIP_STYLE } from '@/lib/chartTheme';
+import PageSkeleton from '@/components/PageSkeleton';
+import ChartBox from '@/components/ChartBox';
 
-/** Coerce any API-origin value to string for safe React rendering (never render objects as children). */
 function safeStr(v: unknown): string {
   if (typeof v === 'string') return v;
   if (typeof v === 'number' && isFinite(v)) return String(v);
@@ -24,11 +27,11 @@ function safeStr(v: unknown): string {
 }
 
 const GRADE_COLORS: Record<string, string> = {
-  A: '#525252',
-  B: '#737373',
-  C: '#a3a3a3',
-  D: '#d4d4d4',
-  F: '#e5e5e5',
+  A: '#2563eb',
+  B: '#16a34a',
+  C: '#ea580c',
+  D: '#9333ea',
+  F: '#dc2626',
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -41,19 +44,19 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 function fmtScore(v: any, digits: number = 3): string {
-  return typeof v === 'number' && isFinite(v) ? v.toFixed(digits) : '\u2014';
+  return typeof v === 'number' && isFinite(v) ? v.toFixed(digits) : '—';
 }
 
 function GradeBadge({ grade, size = 'md' }: { grade: string; size?: 'sm' | 'md' | 'lg' }) {
-  const color = GRADE_COLORS[grade] || '#6b7280';
+  const color = GRADE_COLORS[grade] || '#16a34a';
   const sizeClasses = {
-    sm: 'w-6 h-6 text-xs',
-    md: 'w-8 h-8 text-sm',
-    lg: 'w-12 h-12 text-xl',
+    sm: 'w-5 h-5 text-[10px]',
+    md: 'w-7 h-7 text-xs',
+    lg: 'w-10 h-10 text-lg',
   };
   return (
     <span
-      className={`${sizeClasses[size]} rounded-lg font-bold flex items-center justify-center text-white`}
+      className={`${sizeClasses[size]} rounded-md font-bold flex items-center justify-center text-white`}
       style={{ backgroundColor: color }}
     >
       {grade}
@@ -61,12 +64,12 @@ function GradeBadge({ grade, size = 'md' }: { grade: string; size?: 'sm' | 'md' 
   );
 }
 
-function ScoreBar({ score, height = 8 }: { score: number; height?: number }) {
+function ScoreBar({ score }: { score: number }) {
   const pct = Math.max(0, Math.min(100, score * 100));
-  const color = score >= 0.9 ? '#525252' : score >= 0.7 ? '#737373' : score >= 0.5 ? '#a3a3a3' : '#d4d4d4';
+  const color = score >= 0.9 ? GRADE_COLORS.A : score >= 0.7 ? GRADE_COLORS.B : score >= 0.5 ? GRADE_COLORS.C : GRADE_COLORS.D;
   return (
-    <div className="w-full bg-neutral-200 dark:bg-neutral-700 rounded-full" style={{ height }}>
-      <div className="rounded-full transition-all" style={{ width: `${pct}%`, height, backgroundColor: color }} />
+    <div className="w-full h-1.5 rounded-full" style={{ backgroundColor: 'var(--color-border)' }}>
+      <div className="h-1.5 rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: color }} />
     </div>
   );
 }
@@ -98,29 +101,16 @@ export default function EvalsPage() {
     }
   }, [summaryWindow]);
 
-  useEffect(() => {
-    loadDashboard();
-  }, [loadDashboard]);
+  useEffect(() => { loadDashboard(); }, [loadDashboard]);
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <div className="theme-text-secondary">Loading eval dashboard...</div>
-      </div>
-    );
-  }
+  if (loading) return <PageSkeleton title="Evaluations" />;
 
   if (error) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
-          <p className="text-[var(--color-status-error)] mb-4">{error}</p>
-          <button
-            onClick={() => { setLoading(true); loadDashboard(); }}
-            className="btn-primary"
-          >
-            Retry
-          </button>
+          <p className="text-sm loss mb-3">{error}</p>
+          <button onClick={() => { setLoading(true); loadDashboard(); }} className="btn-primary text-sm px-4 py-2 rounded-lg">Retry</button>
         </div>
       </div>
     );
@@ -141,294 +131,222 @@ export default function EvalsPage() {
     .map(([grade, count]) => ({ grade: safeStr(grade), count: Number(count) }));
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="p-6 max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold theme-text">
-            Evaluation Dashboard
-          </h1>
+    <div className="flex-1 overflow-y-auto p-6 lg:p-8 max-w-7xl mx-auto page-enter">
+      {/* Header */}
+      <div className="flex items-baseline justify-between mb-6">
+        <div>
+          <h1 className="text-xl font-semibold theme-text">Evaluations</h1>
+          <p className="text-sm theme-text-muted mt-0.5">
+            {dashboard.total_runs_evaluated} runs evaluated · Grade {dashboard.overall_grade}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex gap-0.5 p-0.5 rounded-lg theme-elevated">
+            {['24h', '7d'].map(w => (
+              <button
+                key={w}
+                onClick={() => setSummaryWindow(w)}
+                className={`text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
+                  summaryWindow === w
+                    ? 'theme-surface shadow-sm theme-text'
+                    : 'theme-text-muted hover:theme-text-secondary'
+                }`}
+              >
+                {w}
+              </button>
+            ))}
+          </div>
           <button
             onClick={() => { setLoading(true); loadDashboard(); }}
-            className="btn-secondary"
+            className="btn-ghost text-xs px-3 py-1.5 rounded-md border theme-border"
           >
             Refresh
           </button>
         </div>
+      </div>
 
-        {/* Top-level metrics */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div className="p-4 theme-elevated border theme-border rounded-xl">
-            <p className="text-xs theme-text-secondary uppercase tracking-wide mb-1">Runs Evaluated</p>
-            <p className="text-3xl font-bold theme-text">{dashboard.total_runs_evaluated}</p>
-          </div>
-          <div className="p-4 theme-elevated border theme-border rounded-xl">
-            <p className="text-xs theme-text-secondary uppercase tracking-wide mb-1">Avg Score</p>
-            <p className="text-3xl font-bold theme-text">{fmtScore(dashboard.overall_avg_score)}</p>
-          </div>
-          <div className="p-4 theme-elevated border theme-border rounded-xl">
-            <p className="text-xs theme-text-secondary uppercase tracking-wide mb-1">Overall Grade</p>
-            <div className="mt-1">
-              <GradeBadge grade={dashboard.overall_grade} size="lg" />
-            </div>
-          </div>
-          <div className="p-4 theme-elevated border theme-border rounded-xl">
-            <p className="text-xs theme-text-secondary uppercase tracking-wide mb-1">Categories</p>
-            <p className="text-3xl font-bold theme-text">{categoryEntries.length}</p>
+      {/* Top metrics */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6 stagger-enter">
+        <div className="metric-card">
+          <div className="metric-label">Overall Grade</div>
+          <div className="flex items-center gap-2 mt-1">
+            <GradeBadge grade={dashboard.overall_grade} size="lg" />
           </div>
         </div>
-
-        {/* Enterprise Summary Tiles */}
-        {summary && (
-          <div className="mb-6">
-            {/* Row 1: Core aggregate metrics */}
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-3">
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">Min Score</p>
-                <p className="text-xl font-bold theme-text">
-                  {summary.min_score !== null && summary.min_score !== undefined ? fmtScore(summary.min_score) : '\u2014'}
-                </p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">Max Score</p>
-                <p className="text-xl font-bold theme-text">
-                  {summary.max_score !== null && summary.max_score !== undefined ? fmtScore(summary.max_score) : '\u2014'}
-                </p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">P50 Score</p>
-                <p className="text-xl font-bold theme-text">
-                  {summary.p50_score !== null && summary.p50_score !== undefined ? fmtScore(summary.p50_score) : '\u2014'}
-                </p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">P95 Score</p>
-                <p className="text-xl font-bold theme-text">
-                  {summary.p95_score !== null && summary.p95_score !== undefined ? fmtScore(summary.p95_score) : '\u2014'}
-                </p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">Pass Rate</p>
-                <p className="text-xl font-bold text-[var(--color-status-success)]">
-                  {typeof summary.pass_rate === 'number' && isFinite(summary.pass_rate)
-                    ? `${(summary.pass_rate * 100).toFixed(1)}%` : '\u2014'}
-                </p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">Avg Groundedness</p>
-                <p className="text-xl font-bold theme-text">
-                  {summary.avg_groundedness !== null ? fmtScore(summary.avg_groundedness) : '\u2014'}
-                </p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">Avg Retrieval Rel.</p>
-                <p className="text-xl font-bold theme-text">
-                  {summary.avg_retrieval_relevance !== null ? fmtScore(summary.avg_retrieval_relevance) : '\u2014'}
-                </p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <div className="flex gap-1 mb-1">
-                  {['24h', '7d'].map(w => (
-                    <button
-                      key={w}
-                      onClick={() => setSummaryWindow(w)}
-                      className={`px-2 py-1 text-xs rounded-lg ${summaryWindow === w ? 'btn-primary' : 'btn-secondary'}`}
-                    >
-                      {w}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xl font-bold theme-text">{summary.total_runs}</p>
-                <p className="text-xs theme-text-secondary">runs in window</p>
-              </div>
-            </div>
-            {/* Row 2: Data quality warnings */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">% Missing Headlines</p>
-                <p className="text-xl font-bold text-[var(--color-status-warning)]">
-                  {typeof summary.missing_headlines_pct === 'number' && isFinite(summary.missing_headlines_pct)
-                    ? `${summary.missing_headlines_pct}%` : '\u2014'}
-                </p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">% Missing Candles</p>
-                <p className="text-xl font-bold text-[var(--color-status-warning)]">
-                  {typeof summary.missing_candles_pct === 'number' && isFinite(summary.missing_candles_pct)
-                    ? `${summary.missing_candles_pct}%` : '\u2014'}
-                </p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">Passed</p>
-                <p className="text-xl font-bold text-[var(--color-status-success)]">{summary.passed_count ?? '\u2014'}</p>
-              </div>
-              <div className="p-3 theme-elevated border theme-border rounded-xl">
-                <p className="text-xs theme-text-secondary uppercase tracking-wide">Failed</p>
-                <p className="text-xl font-bold text-[var(--color-status-error)]">{summary.failed_count ?? '\u2014'}</p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Category Scores + Grade Distribution */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          {/* Category bar chart */}
-          <div className="p-4 theme-elevated border theme-border rounded-xl">
-            <h2 className="text-lg font-semibold mb-4 theme-text">Score by Category</h2>
-            {categoryChartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={categoryChartData} layout="vertical" margin={{ left: 80 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#525252" />
-                  <XAxis type="number" domain={[0, 1]} tick={{ fill: '#a3a3a3' }} />
-                  <YAxis type="category" dataKey="category" width={80} tick={{ fill: '#a3a3a3', fontSize: 12 }} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg, #1e293b)', border: '1px solid var(--chart-tooltip-border, #334155)', borderRadius: '8px', color: 'var(--chart-tooltip-text, #e2e8f0)' }}
-                    labelStyle={{ color: 'var(--chart-tooltip-text, #e2e8f0)' }}
-                    itemStyle={{ color: 'var(--chart-tooltip-text, #e2e8f0)' }}
-                    formatter={(value: any) => [fmtScore(value), 'Score']}
-                  />
-                  <Bar dataKey="score" radius={[0, 4, 4, 0]}>
-                    {categoryChartData.map((entry, idx) => (
-                      <Cell key={idx} fill={GRADE_COLORS[entry.grade] || '#6b7280'} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="theme-text-secondary">No category data</p>
-            )}
-          </div>
-
-          {/* Grade distribution */}
-          <div className="p-4 theme-elevated border theme-border rounded-xl">
-            <h2 className="text-lg font-semibold mb-4 theme-text">Grade Distribution</h2>
-            {gradeChartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={gradeChartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#525252" />
-                  <XAxis dataKey="grade" tick={{ fill: '#a3a3a3' }} />
-                  <YAxis allowDecimals={false} tick={{ fill: '#a3a3a3' }} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: 'var(--chart-tooltip-bg, #1e293b)', border: '1px solid var(--chart-tooltip-border, #334155)', borderRadius: '8px', color: 'var(--chart-tooltip-text, #e2e8f0)' }}
-                    labelStyle={{ color: 'var(--chart-tooltip-text, #e2e8f0)' }}
-                    itemStyle={{ color: 'var(--chart-tooltip-text, #e2e8f0)' }}
-                  />
-                  <Bar dataKey="count" name="Runs">
-                    {gradeChartData.map((entry, idx) => (
-                      <Cell key={idx} fill={GRADE_COLORS[entry.grade] || '#6b7280'} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="theme-text-secondary">No grade data</p>
-            )}
+        <div className="metric-card">
+          <div className="metric-label">Avg Score</div>
+          <div className="metric-value">{fmtScore(dashboard.overall_avg_score)}</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">Pass Rate</div>
+          <div className="metric-value" style={{ color: 'var(--color-gain)' }}>
+            {summary && typeof summary.pass_rate === 'number'
+              ? fmtPercent(summary.pass_rate * 100) : '—'}
           </div>
         </div>
+        <div className="metric-card">
+          <div className="metric-label">Runs Evaluated</div>
+          <div className="metric-value">{fmtNumber(dashboard.total_runs_evaluated)}</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-label">Categories</div>
+          <div className="metric-value">{categoryEntries.length}</div>
+        </div>
+      </div>
 
-        {/* Category Cards */}
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold mb-4 theme-text">Category Breakdown</h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            {categoryEntries.map(([cat, data]) => (
+      {/* Summary stats row */}
+      {summary && (
+        <div className="grid grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+          {[
+            { label: 'Min', value: summary.min_score },
+            { label: 'P50', value: summary.p50_score },
+            { label: 'P95', value: summary.p95_score },
+            { label: 'Max', value: summary.max_score },
+            { label: 'Passed', value: summary.passed_count, isCount: true, color: 'var(--color-gain)' },
+            { label: 'Failed', value: summary.failed_count, isCount: true, color: 'var(--color-loss)' },
+          ].map(item => (
+            <div key={item.label} className="px-3 py-2 border theme-border rounded-lg">
+              <div className="text-[10px] uppercase tracking-wider theme-text-muted">{item.label}</div>
               <div
-                key={cat}
-                className="p-3 theme-elevated border theme-border rounded-xl"
+                className="text-sm font-semibold tabular-nums"
+                style={item.color ? { color: item.color } : undefined}
               >
-                <div className="flex items-center gap-2 mb-2">
-                  <GradeBadge grade={data.grade} size="sm" />
-                  <span className="text-xs font-medium theme-text-secondary truncate">
-                    {CATEGORY_LABELS[cat] || cat}
-                  </span>
-                </div>
-                <ScoreBar score={data.avg_score} />
-                <p className="text-xs theme-text-secondary mt-1">
-                  {fmtScore(data.avg_score)} avg | {data.eval_count} evals
-                </p>
-                <p className="text-xs theme-text-muted mt-1">
-                  {data.min_score != null ? `min ${fmtScore(data.min_score)}` : ''}
-                  {data.max_score != null ? ` / max ${fmtScore(data.max_score)}` : ''}
-                </p>
-                {data.pass_rate != null && (
-                  <p className="text-xs text-[var(--color-status-success)] mt-1">
-                    {(data.pass_rate * 100).toFixed(0)}% pass rate
-                  </p>
-                )}
+                {item.value != null ? (item.isCount ? item.value : fmtScore(item.value)) : '—'}
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <div className="chart-container">
+          <div className="chart-title">Score by Category</div>
+          {categoryChartData.length > 0 ? (
+            <ChartBox height={240}>
+              {(w, h) => (
+                <BarChart width={w} height={h} data={categoryChartData} layout="vertical" margin={{ left: 80 }}>
+                  <CartesianGrid {...GRID_STYLE} />
+                  <XAxis type="number" domain={[0, 1]} tick={AXIS_STYLE} tickLine={false} axisLine={false} />
+                  <YAxis type="category" dataKey="category" width={80} tick={{ ...AXIS_STYLE, fontSize: 11 }} tickLine={false} axisLine={false} />
+                  <Tooltip {...TOOLTIP_STYLE} formatter={(value: any) => [fmtScore(value), 'Score']} />
+                  <Bar dataKey="score" radius={[0, 3, 3, 0]}>
+                    {categoryChartData.map((entry, idx) => (
+                      <Cell key={idx} fill={GRADE_COLORS[entry.grade] || GRADE_COLORS.B} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              )}
+            </ChartBox>
+          ) : (
+            <div className="h-[240px] flex items-center justify-center theme-text-muted text-sm">No category data</div>
+          )}
         </div>
 
-        {/* Recent Runs Table */}
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold mb-4 theme-text">Recent Evaluated Runs</h2>
-          <div className="theme-elevated border theme-border rounded-xl overflow-hidden">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b theme-border theme-elevated">
-                  <th className="text-left px-4 py-3 text-xs font-medium theme-text-secondary uppercase">Run</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium theme-text-secondary uppercase">Command</th>
-                  <th className="text-center px-4 py-3 text-xs font-medium theme-text-secondary uppercase">Grade</th>
-                  <th className="text-right px-4 py-3 text-xs font-medium theme-text-secondary uppercase">Score</th>
-                  <th className="text-right px-4 py-3 text-xs font-medium theme-text-secondary uppercase">Evals</th>
-                  <th className="text-right px-4 py-3 text-xs font-medium theme-text-secondary uppercase">Pass/Fail</th>
-                  <th className="text-right px-4 py-3 text-xs font-medium theme-text-secondary uppercase">Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(runs.length > 0 ? runs : dashboard.recent_runs).map((run) => (
-                  <tr
-                    key={run.run_id}
-                    onClick={() => router.push(`/evals/runs/${run.run_id}`)}
-                    className="border-b theme-border hover:bg-[var(--color-fill-ghost-hover)] cursor-pointer"
+        <div className="chart-container">
+          <div className="chart-title">Grade Distribution</div>
+          {gradeChartData.length > 0 ? (
+            <ChartBox height={240}>
+              {(w, h) => (
+                <BarChart width={w} height={h} data={gradeChartData}>
+                  <CartesianGrid {...GRID_STYLE} />
+                  <XAxis dataKey="grade" tick={AXIS_STYLE} tickLine={false} axisLine={false} />
+                  <YAxis allowDecimals={false} tick={AXIS_STYLE} tickLine={false} axisLine={false} />
+                  <Tooltip {...TOOLTIP_STYLE} />
+                  <Bar dataKey="count" name="Runs" radius={[3, 3, 0, 0]}>
+                    {gradeChartData.map((entry, idx) => (
+                      <Cell key={idx} fill={GRADE_COLORS[entry.grade] || GRADE_COLORS.B} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              )}
+            </ChartBox>
+          ) : (
+            <div className="h-[240px] flex items-center justify-center theme-text-muted text-sm">No grade data</div>
+          )}
+        </div>
+      </div>
+
+      {/* Category breakdown cards */}
+      <div className="mb-6">
+        <div className="section-header">Category Breakdown</div>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          {categoryEntries.map(([cat, data]) => (
+            <div key={cat} className="metric-card !p-3">
+              <div className="flex items-center gap-1.5 mb-2">
+                <GradeBadge grade={data.grade} size="sm" />
+                <span className="text-xs font-medium theme-text-muted truncate">
+                  {CATEGORY_LABELS[cat] || cat}
+                </span>
+              </div>
+              <ScoreBar score={data.avg_score} />
+              <p className="text-xs tabular-nums theme-text-muted mt-1.5">
+                {fmtScore(data.avg_score)} avg · {data.eval_count} evals
+              </p>
+              {data.pass_rate != null && (
+                <p className="text-[10px] tabular-nums mt-0.5" style={{ color: 'var(--color-gain)' }}>
+                  {(data.pass_rate * 100).toFixed(0)}% pass
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Runs table */}
+      <div className="border theme-border rounded-lg overflow-hidden">
+        <div className="px-4 py-3 theme-elevated flex items-center justify-between">
+          <span className="section-header !mb-0">Recent Evaluated Runs</span>
+        </div>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>Command</th>
+              <th>Grade</th>
+              <th className="num">Score</th>
+              <th className="num">Evals</th>
+              <th className="num">Pass/Fail</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(runs.length > 0 ? runs : dashboard.recent_runs).map((run) => (
+              <tr
+                key={run.run_id}
+                onClick={() => router.push(`/evals/runs/${run.run_id}`)}
+                className="cursor-pointer"
+              >
+                <td>
+                  <Link
+                    href={`/evals/runs/${run.run_id}`}
+                    className="font-mono text-xs text-[var(--color-link)] hover:underline"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <td className="px-4 py-3">
-                      <Link
-                        href={`/evals/runs/${run.run_id}`}
-                        className="text-xs font-mono theme-text-secondary hover:underline"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {run.run_id.slice(0, 12)}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-sm theme-text-secondary truncate block max-w-[200px]">
-                        {run.command || '\u2014'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <GradeBadge grade={run.grade} size="sm" />
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm font-medium theme-text">
-                      {fmtScore(run.avg_score)}
-                    </td>
-                    <td className="px-4 py-3 text-right text-sm theme-text-secondary">
-                      {run.eval_count}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <span className="text-sm">
-                        <span className="text-[var(--color-status-success)]">{run.passed}</span>
-                        {' / '}
-                        <span className="text-[var(--color-status-error)]">{run.failed}</span>
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right text-xs theme-text-secondary">
-                      {new Date(run.created_at).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-                {runs.length === 0 && dashboard.recent_runs.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center theme-text-secondary">
-                      No evaluated runs yet. Run a trade command to generate eval results.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
+                    {run.run_id.slice(0, 10)}
+                  </Link>
+                </td>
+                <td className="max-w-[180px] truncate theme-text-muted text-xs">{run.command || '—'}</td>
+                <td><GradeBadge grade={run.grade} size="sm" /></td>
+                <td className="num tabular-nums font-medium">{fmtScore(run.avg_score)}</td>
+                <td className="num tabular-nums theme-text-muted">{run.eval_count}</td>
+                <td className="num tabular-nums">
+                  <span style={{ color: 'var(--color-gain)' }}>{run.passed}</span>
+                  {' / '}
+                  <span style={{ color: 'var(--color-loss)' }}>{run.failed}</span>
+                </td>
+                <td className="tabular-nums theme-text-muted text-xs">{fmtTimeAgo(run.created_at)}</td>
+              </tr>
+            ))}
+            {runs.length === 0 && dashboard.recent_runs.length === 0 && (
+              <tr>
+                <td colSpan={7} className="text-center py-10 theme-text-muted">
+                  No evaluated runs yet. Execute a trade to generate eval results.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

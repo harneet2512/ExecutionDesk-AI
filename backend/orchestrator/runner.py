@@ -31,6 +31,9 @@ from backend.orchestrator.nodes.execution_node import execute as execution_execu
 from backend.orchestrator.nodes.post_trade_node import execute as post_trade_execute
 from backend.orchestrator.nodes.eval_node import execute as eval_execute
 from backend.orchestrator.nodes.news_node import execute as news_execute
+from backend.orchestrator.nodes.prediction_research import execute as prediction_research_execute
+from backend.orchestrator.nodes.prediction_signals import execute as prediction_signals_execute
+from backend.orchestrator.nodes.prediction_risk import execute as prediction_risk_execute
 
 
 def create_run(tenant_id: str, execution_mode: str = "PAPER", source_run_id: str = None) -> str:
@@ -166,7 +169,7 @@ def _create_trade_receipt(run_id: str, status: str, error: dict = None, error_co
             if run_row["parsed_intent_json"]:
                 try:
                     parsed_intent = json.loads(run_row["parsed_intent_json"])
-                except: pass
+                except Exception: pass
             
             # Get order from orders table (columns: order_id, symbol, side,
             # notional_usd, filled_qty, avg_fill_price, total_fees, status,
@@ -339,7 +342,20 @@ async def _execute_run_body(run_id: str, span):
         # signals+risk can run concurrently after research completes.
         # Remaining nodes must be sequential.
         # The "parallel_group" key groups nodes for concurrent execution.
-        if is_command_run:
+        if asset_class in ("PREDICTION", "PREDICTION_MARKET"):
+            nodes = [
+                ("prediction_research", "Search Polymarket for matching markets", prediction_research_execute),
+                ("prediction_signals", "Analyze prediction market signals", prediction_signals_execute),
+                ("prediction_risk", "Assess prediction market risk", prediction_risk_execute),
+                ("strategy", "Build prediction strategy", strategy_execute),
+                ("proposal", "Create order proposal", proposal_execute),
+                ("policy_check", "Validate policy constraints", policy_check_execute),
+                ("approval", "Await user approval", approval_execute),
+                ("execution", "Execute prediction market order", execution_execute),
+                ("post_trade", "Post-trade processing", post_trade_execute),
+                ("eval", "Run evaluations", eval_execute),
+            ]
+        elif is_command_run:
             market_desc = "Fetch stock data (EOD)" if asset_class == "STOCK" else "Fetch market data for universe"
             rank_desc = "Rank by EOD return" if asset_class == "STOCK" else "Rank candidates by 24h return"
             exec_desc = "Generate order ticket" if execution_mode == "ASSISTED_LIVE" else "Place order via provider"
@@ -1029,7 +1045,7 @@ async def _execute_run_body(run_id: str, span):
                 err_tenant_id = row["tenant_id"] if row else "t_default"
                 err_trace_id = row["trace_id"] if row and "trace_id" in row.keys() else None
             await _emit_event(run_id, "RUN_STATUS", {"status": RunStatus.FAILED.value, "error": str(e)}, tenant_id=err_tenant_id)
-        except:
+        except Exception:
             err_tenant_id = "t_default"
             err_trace_id = None
             await _emit_event(run_id, "RUN_STATUS", {"status": RunStatus.FAILED.value, "error": str(e)}, tenant_id="t_default")

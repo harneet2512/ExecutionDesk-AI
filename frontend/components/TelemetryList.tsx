@@ -17,7 +17,7 @@ export default function TelemetryList() {
             const tel = await listRunTelemetry();
             setTelemetry(tel);
         } catch (e) {
-            console.error('Failed to load telemetry:', e);
+            if (process.env.NODE_ENV === 'development') console.error('Failed to load telemetry:', e);
         } finally {
             setLoading(false);
         }

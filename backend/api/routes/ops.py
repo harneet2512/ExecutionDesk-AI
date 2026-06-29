@@ -224,9 +224,9 @@ async def get_metrics(user: dict = Depends(get_current_user)):
                     "run_id": row["run_id"],
                     "error": error_data.get("error", "Unknown error")
                 })
-            except:
+            except Exception:
                 pass
-    
+
     return {
         "run_durations": run_durations,
         "order_fill_latency_ms": fill_latency,

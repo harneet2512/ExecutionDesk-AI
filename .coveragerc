@@ -1,0 +1,12 @@
+[run]
+source = backend
+omit =
+    backend/mcp_servers/*
+
+[report]
+show_missing = true
+fail_under = 0
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.
+    pass

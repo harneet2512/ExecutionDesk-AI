@@ -1,0 +1,28 @@
+app = 'executiondesk-api'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  EXECUTION_MODE_DEFAULT = 'PAPER'
+  DEMO_SAFE_MODE = '1'
+  TEST_AUTH_BYPASS = 'true'
+  DATABASE_URL = 'sqlite:///data/executiondesk.db'
+  API_SECRET_KEY = 'dev-secret-key-change-in-production'
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+[mounts]
+  source = 'edai_data'
+  destination = '/data'
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1

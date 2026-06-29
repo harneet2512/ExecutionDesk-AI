@@ -215,7 +215,7 @@ export default function TradeReceipt({ runId, status: parentStatus }: TradeRecei
                         }
                     }
                 } catch (traceErr) {
-                    console.log('Could not fetch trace:', traceErr);
+                    if (process.env.NODE_ENV === 'development') console.log('Could not fetch trace:', traceErr);
                 }
 
                 // Only show if we have meaningful data
@@ -223,7 +223,7 @@ export default function TradeReceipt({ runId, status: parentStatus }: TradeRecei
                     setTradeResult(result);
                 }
             } catch (e) {
-                console.error('Failed to fetch trade result:', e);
+                if (process.env.NODE_ENV === 'development') console.error('Failed to fetch trade result:', e);
             } finally {
                 setLoading(false);
             }
@@ -365,7 +365,7 @@ Mode: ${tradeResult.mode || 'N/A'}`;
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch (e) {
-            console.error('Failed to copy:', e);
+            if (process.env.NODE_ENV === 'development') console.error('Failed to copy:', e);
         }
     };
 

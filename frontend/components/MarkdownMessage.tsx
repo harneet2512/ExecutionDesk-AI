@@ -188,7 +188,7 @@ export default function MarkdownMessage({ content, className = '' }: MarkdownMes
       return (
         <a
           href={resolvedHref}
-          className="text-[#4a7bc8] hover:text-[#6b9ae8] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)] focus:ring-offset-1 rounded px-0.5 dark:text-[#7ba3f5] dark:hover:text-[#9bb8f8]"
+          className="text-[var(--color-link)] hover:text-[var(--color-link-hover)] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)] focus:ring-offset-1 rounded px-0.5"
           target={target}
           rel={rel}
           {...props}

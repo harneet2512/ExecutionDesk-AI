@@ -48,8 +48,8 @@ python -m compileall backend
 - `orchestrator/runner.py` - DAG-based run execution engine (create_run, execute_run)
 - `orchestrator/nodes/` - DAG nodes: research > signals > news > risk > strategy > proposal > policy_check > approval > execution > post_trade > eval
 - `orchestrator/state_machine.py` - Run status (CREATED > RUNNING > COMPLETED/FAILED) and confirmation status enums
-- `db/connect.py` - SQLite connection management (`get_conn` context manager, `row_get` helper, `init_db`)
-- `db/migrations/` - 29 sequential SQL migrations (auto-applied on startup)
+- `db/connect.py` - SQLite/PostgreSQL connection management (`get_conn` context manager, `row_get` helper, `init_db`)
+- `db/migrations/` - 36 sequential SQL migrations (auto-applied on startup)
 - `db/repo/` - Repository pattern data access layer
 - `services/` - Market data, policy engine, news ingestion, notifications, pre-confirmation insights
 - `providers/` - Paper trading (simulated), Coinbase CDP (live), Polygon (stocks), news (RSS/GDELT)

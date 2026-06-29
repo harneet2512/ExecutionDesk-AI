@@ -333,9 +333,9 @@ def _build_trade_narrative_legacy(
         lines.append(f"Skipped: {blocked}.")
 
     if is_sequential and len(actions) > 1:
-        lines.append("Reply CONFIRM STEP 1 to place the first order, or CANCEL to abort.")
+        lines.append("This is a sequential multi-step trade. Reply CONFIRM STEP 1 to place the first order, or CANCEL to abort.")
     else:
-        lines.append("Reply CONFIRM STEP 1 to place the first order, or CANCEL to abort.")
+        lines.append("This is a sequential multi-step trade. Reply CONFIRM STEP 1 to place the first order, or CANCEL to abort.")
 
     lines.append(evidence_line)
 
@@ -426,7 +426,7 @@ def build_trade_narrative(
         lines.append(_truncate_line(f"Skipped: {skipped}."))
 
     if is_sequential and len(actions) > 1:
-        lines.append("Reply CONFIRM STEP 1 to place the first order, or CANCEL to abort.")
+        lines.append("This is a sequential multi-step trade. Reply CONFIRM STEP 1 to place the first order, or CANCEL to abort.")
     else:
         lines.append("Reply CONFIRM to place this order, or CANCEL to abort.")
 

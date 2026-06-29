@@ -1,5 +1,4 @@
 """Intent parser - converts natural language to structured intent."""
-import json
 import re
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
@@ -64,11 +63,48 @@ def parse_intent(
     elif "1 hour" in text_lower or "last hour" in text_lower:
         lookback = 1
     
+    # Extract constraints (must be before prediction detection)
+    constraints = {}
+    if "limit" in text_lower:
+        constraints["order_type"] = "limit"
+    if "market" in text_lower:
+        constraints["order_type"] = "market"
+    if "max" in text_lower:
+        max_match = re.search(r'max[_\s]+(\d+)', text_lower)
+        if max_match:
+            constraints["max_trades"] = int(max_match.group(1))
+
     # Determine asset class
     asset_class = "CRYPTO"
     if "stock" in text_lower or "equity" in text_lower:
         asset_class = "STOCK"
-    
+
+    # Prediction market detection
+    prediction_keywords = [
+        "prediction", "polymarket", "probability", "odds",
+        "yes on", "no on", "bet on", "will ", "chance of",
+        "i think", "wins the", "win the", "winning",
+    ]
+    is_prediction = any(kw in text_lower for kw in prediction_keywords)
+    if is_prediction and asset_class == "CRYPTO":
+        asset_class = "PREDICTION_MARKET"
+
+        # Determine outcome
+        if "no on" in text_lower or "against" in text_lower:
+            constraints["outcome"] = "NO"
+        elif ("yes on" in text_lower or "bet on" in text_lower
+              or "i think" in text_lower or "wins" in text_lower
+              or "winning" in text_lower or "win " in text_lower):
+            constraints["outcome"] = "YES"
+
+        # Check if this is a query (not a trade)
+        query_indicators = [
+            "probability", "odds", "chance", "what's the",
+            "what are the", "how likely",
+        ]
+        if any(qi in text_lower for qi in query_indicators):
+            action = "QUERY"
+
     # Extract universe (specific symbols)
     parsed_universe = universe or []
     symbol_map = {
@@ -90,17 +126,6 @@ def parse_intent(
         # Default universe for "most profitable" queries
         parsed_universe = ["BTC-USD", "ETH-USD", "SOL-USD", "MATIC-USD", "AVAX-USD"]
     
-    # Extract constraints
-    constraints = {}
-    if "limit" in text_lower:
-        constraints["order_type"] = "limit"
-    if "market" in text_lower:
-        constraints["order_type"] = "market"
-    if "max" in text_lower:
-        max_match = re.search(r'max[_\s]+(\d+)', text_lower)
-        if max_match:
-            constraints["max_trades"] = int(max_match.group(1))
-    
     return TradeIntent(
         action=action,
         objective=objective,
@@ -115,9 +140,29 @@ def parse_intent(
 
 def parse_intent_with_llm(text: str, budget_usd: float = 10.0, universe: Optional[list] = None, lookback_hours: int = 24) -> TradeIntent:
     """
-    Parse intent using LLM (optional enhancement - for now falls back to rule-based).
-    
-    TODO: Integrate with OpenAI or local LLM for better parsing.
+    Parse intent using LLM with regex fallback.
+
+    Uses llm_intent_classifier for semantic understanding when available,
+    falls back to rule-based parsing when OpenAI key is not configured.
     """
-    # For now, use rule-based parser
-    return parse_intent(text, budget_usd, universe, lookback_hours)
+    base = parse_intent(text, budget_usd, universe, lookback_hours)
+
+    try:
+        from backend.agents.llm_intent_classifier import classify_with_llm, _get_openai_key
+        if _get_openai_key():
+            llm = classify_with_llm(text)
+            if llm.confidence >= 0.7:
+                if llm.asset and not any(s for s in base.universe):
+                    symbol_map = {
+                        "BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD",
+                    }
+                    mapped = symbol_map.get(llm.asset.upper(), f"{llm.asset.upper()}-USD")
+                    base.universe = [mapped]
+                if llm.amount_usd and llm.amount_usd > 0:
+                    base.budget_usd = llm.amount_usd
+                if llm.side:
+                    base.action = llm.side.upper()
+    except Exception as exc:
+        logger.debug("LLM enhancement failed (non-critical): %s", str(exc)[:200])
+
+    return base

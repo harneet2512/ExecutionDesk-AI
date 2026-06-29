@@ -50,7 +50,7 @@ export default function RunSummary({ runId }: RunSummaryProps) {
         // No applicable artifacts - return null (component will render nothing)
         setSummary(null);
       } catch (e) {
-        console.error('Summary generation failed:', e);
+        if (process.env.NODE_ENV === 'development') console.error('Summary generation failed:', e);
         setSummary(null);
       } finally {
         setLoading(false);

@@ -1,7 +1,10 @@
 """Intent classification router with deterministic rules and hard guardrails."""
 import re
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Optional
+from backend.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class IntentType(str, Enum):
@@ -431,5 +434,29 @@ def classify_intent(text: str) -> IntentType:
     if is_finance:
         return IntentType.FINANCE_ANALYSIS
     
-    # 9. Default: out of scope
+    # 9. LLM fallback: if we'd return OUT_OF_SCOPE, try the LLM classifier
+    #    to catch typos, alternative phrasings, and ambiguous commands.
+    try:
+        from backend.agents.llm_intent_classifier import classify_with_llm, _get_openai_key
+        if _get_openai_key():
+            llm_result = classify_with_llm(text)
+            if llm_result.confidence >= 0.6:
+                _llm_action = llm_result.action.upper()
+                _ACTION_MAP = {
+                    "BUY": IntentType.TRADE_EXECUTION,
+                    "SELL": IntentType.TRADE_EXECUTION,
+                    "QUERY": IntentType.FINANCE_ANALYSIS,
+                    "PORTFOLIO_ANALYSIS": IntentType.PORTFOLIO_ANALYSIS,
+                    "GREETING": IntentType.GREETING,
+                    "PREDICTION_MARKET": IntentType.TRADE_EXECUTION,
+                    "CONFIRM": IntentType.TRADE_EXECUTION,
+                    "CANCEL": IntentType.TRADE_EXECUTION,
+                }
+                mapped = _ACTION_MAP.get(_llm_action)
+                if mapped:
+                    return mapped
+    except Exception as exc:
+        logger.debug("LLM fallback classify failed (non-critical): %s", str(exc)[:200])
+
+    # 10. Default: out of scope
     return IntentType.OUT_OF_SCOPE

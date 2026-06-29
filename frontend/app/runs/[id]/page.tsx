@@ -6,6 +6,9 @@ import { getRunDetail, getRunStatus, getPortfolioValueOverTime, approve, deny, g
 import RunCharts from '@/components/RunCharts';
 import RunCopilot from '@/components/RunCopilot';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { fmtCurrency, fmtTimeAgo } from '@/lib/format';
+import { getStatusClasses, getStatusLabel } from '@/lib/statusColors';
+import PageSkeleton from '@/components/PageSkeleton';
 
 const fmtNum = (v: any, digits = 2) => (typeof v === 'number' && isFinite(v) ? v.toFixed(digits) : '\u2014');
 
@@ -88,7 +91,7 @@ export default function RunDetailPage() {
         terminalRef.current = true;
       }
     } catch (error) {
-      console.error('Failed to load run detail:', error);
+      if (process.env.NODE_ENV === 'development') console.error('Failed to load run detail:', error);
     } finally {
       setLoading(false);
     }
@@ -107,7 +110,7 @@ export default function RunDetailPage() {
         loadDataFull();
       }
     } catch (error) {
-      console.error('Failed to poll run status:', error);
+      if (process.env.NODE_ENV === 'development') console.error('Failed to poll run status:', error);
     }
   }
 
@@ -129,7 +132,7 @@ export default function RunDetailPage() {
           pollStatus();
         }
       } catch (e) {
-        console.error('Failed to parse SSE event:', e);
+        if (process.env.NODE_ENV === 'development') console.error('Failed to parse SSE event:', e);
       }
     };
     eventSource.onerror = () => { eventSource.close(); };
@@ -148,7 +151,7 @@ export default function RunDetailPage() {
       await approve(approvalId);
       await loadDataFull();
     } catch (error) {
-      console.error('Failed to approve:', error);
+      if (process.env.NODE_ENV === 'development') console.error('Failed to approve:', error);
     }
   }
 
@@ -157,11 +160,11 @@ export default function RunDetailPage() {
       await deny(approvalId);
       await loadDataFull();
     } catch (error) {
-      console.error('Failed to deny:', error);
+      if (process.env.NODE_ENV === 'development') console.error('Failed to deny:', error);
     }
   }
 
-  if (loading || !detail) return <div className="p-8">Loading...</div>;
+  if (loading || !detail) return <PageSkeleton title="Run Detail" />;
 
   const isCommandRun = !!detail.run.command_text;
   const rankings = trace?.artifacts?.rankings || [];
@@ -170,37 +173,39 @@ export default function RunDetailPage() {
   const steps = trace?.steps || [];
 
   return (
-    <div className="p-8 pb-10 max-w-7xl mx-auto min-h-0">
-      <div className="flex items-center justify-between mb-2">
-        <h1 className="text-3xl font-bold theme-text">Run Details</h1>
+    <div className="flex-1 overflow-y-auto p-6 lg:p-8 max-w-7xl mx-auto page-enter">
+      {/* Header */}
+      <div className="flex items-baseline justify-between mb-4">
+        <div>
+          <h1 className="text-xl font-semibold theme-text">Run Detail</h1>
+          <div className="flex flex-wrap items-center gap-3 mt-1 text-sm">
+            {(() => { const sc = getStatusClasses(detail.run.status); return (
+              <span className={`badge ${sc.bg} ${sc.text}`}>
+                {getStatusLabel(detail.run.status)}
+                {detail.run.status === 'COMPLETED' &&
+                 detail.orders?.some((o: any) =>
+                   !['FILLED','FAILED','REJECTED','CANCELED','EXPIRED','TIMEOUT'].includes((o.status||'').toUpperCase())
+                 ) && ' (fill pending)'}
+              </span>
+            ); })()}
+            <span className="badge badge-neutral">{detail.run.execution_mode}</span>
+            {detail.run.created_at && (
+              <span className="text-xs theme-text-muted tabular-nums">{fmtTimeAgo(detail.run.created_at)}</span>
+            )}
+            {showDebugIds && (
+              <code className="text-[10px] font-mono theme-text-muted">{runId}</code>
+            )}
+          </div>
+        </div>
         <button
           onClick={() => setShowDebugIds(!showDebugIds)}
-          className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${showDebugIds ? 'bg-neutral-600 text-white' : 'theme-elevated theme-text-secondary hover:bg-[var(--color-fill-ghost-hover)]'}`}
+          className={`px-2.5 py-1 text-xs rounded-md transition-colors border ${showDebugIds ? 'btn-primary' : 'btn-ghost theme-border'}`}
         >
-          {showDebugIds ? 'Debug ON' : 'Debug'}
+          Debug
         </button>
       </div>
-      <div className="flex flex-wrap gap-4 text-sm theme-text-secondary mb-4">
-        <span>Status: <span className={`font-medium ${detail.run.status === 'COMPLETED' ? 'text-[var(--color-status-success)]' : detail.run.status === 'FAILED' ? 'text-[var(--color-status-error)]' : 'theme-text'}`}>{detail.run.status}</span>
-          {detail.run.status === 'COMPLETED' &&
-           detail.orders?.some((o: any) =>
-             !['FILLED','FAILED','REJECTED','CANCELED','EXPIRED','TIMEOUT'].includes((o.status||'').toUpperCase())
-           ) && (
-            <span className="text-xs text-[var(--color-status-warning)] ml-1">(fill pending)</span>
-          )}
-        </span>
-        <span>Mode: <span className="font-medium">{detail.run.execution_mode}</span></span>
-        {showDebugIds && (
-          <>
-            <span>Run ID: <code className="theme-elevated px-1 rounded font-mono text-xs">{runId}</code></span>
-            {detail.run.trace_id && (
-              <span>Trace ID: <code className="theme-elevated px-1 rounded font-mono text-xs">{detail.run.trace_id}</code></span>
-            )}
-          </>
-        )}
-      </div>
       {isCommandRun && detail.run.command_text && (
-        <p className="theme-text-secondary mb-4">Command: &quot;{detail.run.command_text}&quot;</p>
+        <p className="text-sm theme-text-muted mb-4">Command: &ldquo;{detail.run.command_text}&rdquo;</p>
       )}
       
       {detail.run.status === 'PAUSED' && approvals.length > 0 && (
@@ -238,66 +243,44 @@ export default function RunDetailPage() {
       />
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-6 border-b theme-border">
-        <button
-          data-testid="run-tab-timeline"
-          onClick={() => setActiveTab('timeline')}
-          className={`px-4 py-2 ${activeTab === 'timeline' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
-        >
-          Execution Trace
-        </button>
-        <button
-          data-testid="run-tab-evidence"
-          onClick={() => setActiveTab('evidence')}
-          className={`px-4 py-2 ${activeTab === 'evidence' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
-        >
-          Evidence
-        </button>
-        <button
-          data-testid="run-tab-orders"
-          onClick={() => setActiveTab('orders')}
-          className={`px-4 py-2 ${activeTab === 'orders' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
-        >
-          Orders & Fills
-        </button>
-        <button
-          data-testid="run-tab-pnl"
-          onClick={() => setActiveTab('pnl')}
-          className={`px-4 py-2 ${activeTab === 'pnl' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
-        >
-          PnL & Slippage
-        </button>
-        <button
-          data-testid="run-tab-charts"
-          onClick={() => setActiveTab('charts')}
-          className={`px-4 py-2 ${activeTab === 'charts' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
-        >
-          Charts
-        </button>
-        <button
-          data-testid="run-tab-evals"
-          onClick={() => {
-            setActiveTab('evals');
-            // Load evals on first click
-            if (runEvals.length === 0) {
-              setEvalsLoading(true);
-              fetchEvalRunDetail(runId)
-                .then((data) => {
-                  const all: EvalDetail[] = [];
-                  const cats = (data ?? {}).categories ?? {};
-                  for (const category of Object.values(cats)) {
-                    if (Array.isArray(category.evals)) all.push(...category.evals);
-                  }
-                  setRunEvals(all);
-                })
-                .catch(() => setRunEvals([]))
-                .finally(() => setEvalsLoading(false));
-            }
-          }}
-          className={`px-4 py-2 ${activeTab === 'evals' ? 'border-b-2 border-neutral-800 dark:border-neutral-200' : ''}`}
-        >
-          Evals
-        </button>
+      <div className="flex gap-0.5 mb-6 p-0.5 rounded-lg theme-elevated w-fit">
+        {([
+          { key: 'timeline', label: 'Trace' },
+          { key: 'evidence', label: 'Evidence' },
+          { key: 'orders', label: 'Orders' },
+          { key: 'pnl', label: 'P&L' },
+          { key: 'charts', label: 'Charts' },
+          { key: 'evals', label: 'Evals' },
+        ] as const).map(tab => (
+          <button
+            key={tab.key}
+            data-testid={`run-tab-${tab.key}`}
+            onClick={() => {
+              setActiveTab(tab.key);
+              if (tab.key === 'evals' && runEvals.length === 0) {
+                setEvalsLoading(true);
+                fetchEvalRunDetail(runId)
+                  .then((data) => {
+                    const all: EvalDetail[] = [];
+                    const cats = (data ?? {}).categories ?? {};
+                    for (const category of Object.values(cats)) {
+                      if (Array.isArray(category.evals)) all.push(...category.evals);
+                    }
+                    setRunEvals(all);
+                  })
+                  .catch(() => setRunEvals([]))
+                  .finally(() => setEvalsLoading(false));
+              }
+            }}
+            className={`text-xs font-medium px-3 py-1.5 rounded-md transition-colors ${
+              activeTab === tab.key
+                ? 'theme-surface shadow-sm theme-text'
+                : 'theme-text-muted hover:theme-text-secondary'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {/* Timeline Tab */}

@@ -5,8 +5,7 @@ Verifies that all repo INSERT/UPDATE statements match actual migration schema.
 import pytest
 import os
 import uuid
-from backend.db.connect import init_db, get_conn, _close_connections, validate_schema
-from backend.core.config import get_settings
+from backend.db.connect import get_conn, validate_schema
 from backend.db.repo.evals_repo import EvalsRepo
 from backend.db.repo.portfolio_repo import PortfolioRepo
 from backend.db.repo.run_events_repo import RunEventsRepo
@@ -18,43 +17,24 @@ os.environ["PYTEST_CURRENT_TEST"] = "test"
 
 
 @pytest.fixture
-def setup_db():
-    """Setup clean database for each test."""
-    settings = get_settings()
-    db_path = settings.database_url.replace("sqlite:///", "")
-    _close_connections()
-    if os.path.exists(db_path):
-        try:
-            os.remove(db_path)
-        except PermissionError:
-            pass
-    init_db()
-
-    # Insert base data needed for FK constraints
+def setup_db(test_db):
+    """Use isolated test DB from conftest and seed FK reference data."""
     with get_conn() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT OR IGNORE INTO tenants (tenant_id, name) VALUES (?, ?)",
             ("t_default", "Default Tenant")
         )
-        # Insert a run for FK references
         cursor.execute(
             "INSERT OR IGNORE INTO runs (run_id, tenant_id, status, execution_mode) VALUES (?, ?, ?, ?)",
             ("run_schema_test", "t_default", "CREATED", "PAPER")
         )
-        # Insert an order for FK references
         cursor.execute(
             "INSERT OR IGNORE INTO orders (order_id, run_id, tenant_id, provider, symbol, side, order_type, qty, notional_usd, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ("ord_schema_test", "run_schema_test", "t_default", "PAPER", "BTC-USD", "buy", "market", 0.001, 10.0, "FILLED")
         )
         conn.commit()
-    yield
-    _close_connections()
-    if os.path.exists(db_path):
-        try:
-            os.remove(db_path)
-        except PermissionError:
-            pass
+    yield test_db
 
 
 class TestEvalsRepoSchema:

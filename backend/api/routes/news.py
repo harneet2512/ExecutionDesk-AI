@@ -84,7 +84,7 @@ async def get_run_artifacts(run_id: str, user: dict = Depends(require_viewer), s
             import json
             try:
                 res["artifact_json"] = json.loads(res["artifact_json"])
-            except:
+            except Exception:
                 pass
             results.append(res)
         return results

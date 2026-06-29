@@ -101,9 +101,35 @@ def parse_command(text: str, default_budget: float = 10.0, default_universe: Opt
     constraints = {}
     if "limit" in text_lower:
         constraints["order_type"] = "limit"
-    if "market" in text_lower:
+    if "market" in text_lower and "prediction" not in text_lower and "polymarket" not in text_lower:
         constraints["order_type"] = "market"
-    
+
+    # Prediction market detection
+    prediction_keywords = [
+        "prediction", "polymarket", "probability", "odds",
+        "yes on", "no on", "bet on", "will ", "chance of",
+        "i think", "wins the", "win the", "winning",
+    ]
+    is_prediction = any(kw in text_lower for kw in prediction_keywords)
+    if is_prediction:
+        constraints["asset_class"] = "PREDICTION_MARKET"
+
+        # Determine outcome
+        if "no on" in text_lower or "against" in text_lower:
+            constraints["outcome"] = "NO"
+        elif ("yes on" in text_lower or "bet on" in text_lower
+              or "i think" in text_lower or "wins" in text_lower
+              or "winning" in text_lower or "win " in text_lower):
+            constraints["outcome"] = "YES"
+
+        # Query detection
+        query_indicators = [
+            "probability", "odds", "chance", "what's the",
+            "what are the", "how likely",
+        ]
+        if any(qi in text_lower for qi in query_indicators):
+            constraints["action"] = "QUERY"
+
     return TradeIntent(
         side=side,
         budget_usd=budget,

@@ -245,9 +245,9 @@ export default function OrderTicketCard({ ticket, onMarkExecuted, onCancel, live
 
             {/* Cancel Confirmation Modal */}
             {showCancelConfirm && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" role="dialog" aria-modal="true" aria-labelledby="cancel-dialog-title">
                     <div className="theme-surface rounded-xl p-6 max-w-sm w-full shadow-xl">
-                        <h3 className="text-lg font-semibold theme-text mb-2">
+                        <h3 id="cancel-dialog-title" className="text-lg font-semibold theme-text mb-2">
                             Cancel Order Ticket?
                         </h3>
                         <p className="text-sm theme-text-secondary mb-4">
@@ -274,9 +274,9 @@ export default function OrderTicketCard({ ticket, onMarkExecuted, onCancel, live
 
             {/* Receipt Modal */}
             {showReceiptModal && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" role="dialog" aria-modal="true" aria-labelledby="receipt-dialog-title">
                     <div className="theme-surface rounded-xl p-6 max-w-lg w-full shadow-xl">
-                        <h3 className="text-lg font-semibold theme-text mb-4">
+                        <h3 id="receipt-dialog-title" className="text-lg font-semibold theme-text mb-4">
                             Submit Execution Receipt
                         </h3>
 

@@ -456,10 +456,12 @@ async def _chat_command_impl(
     conversation_id = request_body.conversation_id
     
     # STEP 1: Check for CONFIRM/CANCEL commands first
-    if text_upper in ["CONFIRM", "CONFIRM LIVE"]:
+    from backend.agents.llm_intent_classifier import CONFIRM_SYNONYMS, CANCEL_SYNONYMS
+    if text_upper in CONFIRM_SYNONYMS:
         from backend.db.repo.trade_confirmations_repo import TradeConfirmationsRepo
         from backend.agents.schemas import TradeIntent
         from backend.api.routes.utils import json_dumps
+        from backend.services.pre_confirm_insight import generate_insight
         import json as json_module
 
         tenant_id = user.get("tenant_id", "t_default")
@@ -903,7 +905,7 @@ async def _chat_command_impl(
         }
         return JSONResponse(content=response_content)
     
-    if text_upper == "CANCEL":
+    if text_upper in CANCEL_SYNONYMS:
         from backend.db.repo.trade_confirmations_repo import TradeConfirmationsRepo
 
         tenant_id = user.get("tenant_id", "t_default")

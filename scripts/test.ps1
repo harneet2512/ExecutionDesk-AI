@@ -15,7 +15,12 @@ if (Test-Path "test_enterprise.db") {
 }
 
 Write-Host "Running backend tests..." -ForegroundColor Cyan
-python -m pytest tests/ -v --tb=short
+# Pass --cov to enable coverage reporting: scripts/test.ps1 --cov
+if ($args -contains "--cov") {
+    python -m pytest tests/ -v --tb=short --cov=backend --cov-report=term-missing
+} else {
+    python -m pytest tests/ -v --tb=short
+}
 
 # Frontend smoke test
 if (Test-Path "frontend") {

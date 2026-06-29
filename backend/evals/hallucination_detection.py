@@ -122,9 +122,9 @@ def _check_evidence_coverage(cursor, run_id: str) -> Tuple[bool, str]:
     if row and row["trade_proposal_json"]:
         try:
             proposal = json.loads(row["trade_proposal_json"])
-        except:
+        except Exception:
             pass
-    
+
     proposal_text = json.dumps(proposal).lower()
     mentions_news = any(word in proposal_text for word in ["news", "headline", "article", "sentiment"])
     
@@ -174,7 +174,7 @@ def _check_claim_faithfulness(cursor, run_id: str) -> Tuple[bool, str]:
     
     try:
         proposal = json.loads(row["trade_proposal_json"])
-    except:
+    except Exception:
         return True, "Claim faithfulness: invalid proposal JSON"
     
     # Get financial_brief artifact for comparison

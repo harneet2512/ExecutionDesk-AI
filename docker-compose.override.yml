@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  backend:
+    volumes:
+      - ./backend:/app/backend
+    command: uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      FORCE_PAPER_MODE: "true"
+      ENABLE_DEV_AUTH: "true"
+
+  frontend:
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev

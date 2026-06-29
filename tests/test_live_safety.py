@@ -53,8 +53,9 @@ def test_live_order_exceeds_default_cap(setup_db):
 
         # Should be blocked with 400
         assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text}"
-        assert "LIVE order blocked" in response.json()["detail"]
-        assert "exceeds LIVE_MAX_NOTIONAL_USD" in response.json()["detail"]
+        msg = response.json().get("content") or response.json().get("error", {}).get("message", "")
+        assert "LIVE order blocked" in msg
+        assert "exceeds LIVE_MAX_NOTIONAL_USD" in msg
     finally:
         # Reset env vars
         os.environ.pop("ENABLE_LIVE_TRADING", None)
@@ -207,7 +208,8 @@ def test_commands_execute_endpoint_enforces_cap(setup_db):
 
         # Should be blocked with 400
         assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text}"
-        assert "LIVE order blocked" in response.json()["detail"]
+        msg = response.json().get("content") or response.json().get("error", {}).get("message", "")
+        assert "LIVE order blocked" in msg
     finally:
         # Reset env vars
         os.environ.pop("ENABLE_LIVE_TRADING", None)

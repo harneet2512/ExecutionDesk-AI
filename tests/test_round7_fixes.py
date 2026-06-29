@@ -164,15 +164,27 @@ def test_sentiment_analysis():
     from backend.services.pre_confirm_insight import _analyze_headline_sentiment
     
     # Test bullish keywords
-    assert _analyze_headline_sentiment("Bitcoin surges to new high") == "bullish"
-    assert _analyze_headline_sentiment("BTC rally continues") == "bullish"
-    
+    result = _analyze_headline_sentiment("Bitcoin surges to new high")
+    sentiment = result["sentiment"] if isinstance(result, dict) else result
+    assert sentiment == "bullish"
+
+    result = _analyze_headline_sentiment("BTC rally continues")
+    sentiment = result["sentiment"] if isinstance(result, dict) else result
+    assert sentiment == "bullish"
+
     # Test bearish keywords
-    assert _analyze_headline_sentiment("Bitcoin crashes amid fears") == "bearish"
-    assert _analyze_headline_sentiment("BTC plunges on bad news") == "bearish"
-    
+    result = _analyze_headline_sentiment("Bitcoin crashes amid fears")
+    sentiment = result["sentiment"] if isinstance(result, dict) else result
+    assert sentiment == "bearish"
+
+    result = _analyze_headline_sentiment("BTC plunges on bad news")
+    sentiment = result["sentiment"] if isinstance(result, dict) else result
+    assert sentiment == "bearish"
+
     # Test neutral
-    assert _analyze_headline_sentiment("Bitcoin price analysis") == "neutral"
+    result = _analyze_headline_sentiment("Bitcoin price analysis")
+    sentiment = result["sentiment"] if isinstance(result, dict) else result
+    assert sentiment == "neutral"
 
 
 if __name__ == "__main__":

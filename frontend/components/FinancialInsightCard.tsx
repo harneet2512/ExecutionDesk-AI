@@ -391,7 +391,7 @@ export default function FinancialInsightCard({ insight, newsEnabled = true }: Fi
                                     href={safeHref(h.url) || undefined}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="text-[#4a7bc8] hover:text-[#6b9ae8] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)] focus:ring-offset-1 rounded inline-flex items-center gap-1 dark:text-[#7ba3f5] dark:hover:text-[#9bb8f8]"
+                                    className="text-[var(--color-link)] hover:text-[var(--color-link-hover)] hover:underline focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)] focus:ring-offset-1 rounded inline-flex items-center gap-1"
                                     title={h.title}
                                 >
                                     {h.title}
@@ -646,7 +646,7 @@ export default function FinancialInsightCard({ insight, newsEnabled = true }: Fi
                                         href={safeHref(item.url) || undefined}
                                         target="_blank"
                                         rel="noopener noreferrer"
-                                        className="block text-[#4a7bc8] hover:underline dark:text-[#7ba3f5]"
+                                        className="block text-[var(--color-link)] hover:underline"
                                     >
                                         {item.title || item.url}
                                     </a>

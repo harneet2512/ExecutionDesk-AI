@@ -23,7 +23,7 @@ async def get_current_user(
     which cannot set custom HTTP headers.
     """
     settings = get_settings()
-    
+
     # Test auth bypass (pytest only)
     if settings.test_auth_bypass:
         return {

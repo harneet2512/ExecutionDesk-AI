@@ -131,7 +131,7 @@ export function useRunStatus(runId: string | null, options?: { pollInterval?: nu
             setExecutionMode(data.execution_mode);
             setIsStale(false);
         } catch (e) {
-            console.error('[useRunStatus] Fetch failed:', e);
+            if (process.env.NODE_ENV === 'development') console.error('[useRunStatus] Fetch failed:', e);
             setIsStale(true);
         }
     };

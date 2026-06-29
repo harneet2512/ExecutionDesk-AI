@@ -3,6 +3,7 @@ const backend = process.env.BACKEND_URL || "http://localhost:8000";
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: 'standalone',
   rewrites: async () => [
     {
       source: "/api/v1/:path*",

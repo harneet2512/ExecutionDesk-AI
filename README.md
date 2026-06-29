@@ -112,47 +112,66 @@ If `OTLP_ENDPOINT` is not set, spans are logged to console (or silently dropped 
 
 3. Start a new conversation and try: "Buy me the most profitable crypto of the last 24 hours for $10"
 
+## Docker Quick Start
+
+```bash
+docker compose up --build
+# Frontend: http://localhost:3000
+# Backend:  http://localhost:8000
+# API Docs: http://localhost:8000/docs
+```
+
+Or use the helper script: `bash scripts/docker-start.sh`
+
 ## Architecture
 
-- **Backend**: FastAPI with orchestrator, DAG nodes, providers, policy engine
-- **Frontend**: Next.js with Recharts for time-series visualization
-- **Database**: SQLite with enterprise schema (18 tables)
-- **Execution**: Paper trading provider with realistic order lifecycle
+- **Backend**: FastAPI (Python) with DAG-based orchestrator, policy engine, and multi-provider execution
+- **Frontend**: Next.js 15 (React 18, TypeScript, Tailwind) workspace layout with collapsible chat panel
+- **Database**: SQLite (local dev) or PostgreSQL (production) with 36 migration files
+- **Providers**: Coinbase CDP (crypto), Polygon (stocks), Polymarket CLOB (prediction markets), paper trading
+- **NLP**: Hybrid regex + LLM intent classifier (OpenAI gpt-4o-mini with structured output, regex fallback)
 
 ## Key Features
 
-- ✅ End-to-end run execution with DAG nodes
-- ✅ Policy engine with deterministic checks
-- ✅ Approval workflow
-- ✅ Portfolio snapshots and time-series charts
-- ✅ Order lifecycle with events
-- ✅ Online evaluations
-- ✅ SSE streaming for real-time updates
-- ✅ **Premium ChatGPT-like UI** with persistent conversations
-- ✅ **Observability**: Telemetry persisted to DB (survives process exit)
-- ✅ **Security**: Rate limiting and audit logging
+**Trading Engine**
+- DAG-based run execution (research > signals > risk > strategy > proposal > policy > approval > execution > post-trade > eval)
+- Multi-asset support: crypto, stocks, prediction markets
+- Policy engine with deterministic safety checks
+- Human approval workflow for LIVE trades
+- Paper trading with realistic order lifecycle
 
-## New Features
+**Prediction Markets (Polymarket)**
+- CLOB API integration (limit orders, positions, order book)
+- Market search and discovery with probability charting
+- Natural language commands: "buy yes on Trump winning 2028 for $5"
+- Prediction-specific DAG nodes (research, signals, risk)
 
-### Premium ChatGPT-Like UI
-- Left sidebar with **Chats/Trades/Evals/Telemetry** tabs
-- Persistent conversation threads
-- Natural language interaction (no command buttons)
-- Dark/light mode toggle
-- SSE streaming for real-time updates
+**Client Operations**
+- Client health scoring (0-100) with classification (healthy/at_risk/churning)
+- Issue tracking with threaded comments
+- Alert system (inactivity, error spikes, volume drops)
+- Runbook/playbook system with 8 pre-populated operational guides
 
-### Observability
-- **Run Telemetry**: Duration, tool calls, events, errors persisted to DB
-- **OpenTelemetry**: OTLP exporter support (configurable via env vars)
-- **Telemetry API**: Query telemetry via `/api/v1/telemetry/runs`
+**Developer Platform**
+- API key management (SHA256 hash storage, permission scoping, rotation with 24h grace)
+- Webhook subscriptions with HMAC signatures and dead letter queue
+- WebSocket market data streaming (prices, order book, trades)
+- Interactive API documentation with code snippets (Python/JS/cURL)
 
-### Security Hardening
-- **Rate Limiting**: Per-route quotas (10/min for sensitive endpoints)
-- **Audit Logging**: Critical actions logged with secret redaction
-- **Input Validation**: Pydantic models for request/response
+**Frontend**
+- Workspace layout: icon rail + route-driven pages + collapsible chat panel
+- Home dashboard with quick stats and actions
+- 8 sections: Home, Chats, Trades, Evals, Telemetry, Operations, Markets, Clients
+- Real-time SSE streaming, order book, price ticker
+- Dark/light mode, loading skeletons, error boundaries per section
 
-See `FINAL_SUMMARY.md` for complete documentation.
-See `REFACTOR_SUMMARY.md` for refactoring details.
+**Enterprise**
+- PostgreSQL support with connection pooling and 5 analytical query endpoints
+- Structured JSON logging with automatic secret redaction
+- OpenTelemetry tracing (OTLP exporter)
+- Prometheus metrics at `/api/v1/metrics`
+- 16 built-in evaluation modules (hallucination detection, agent quality, grounding)
+- 185+ automated tests (pytest + Vitest)
 
 ## LIVE Trading RUNBOOK
 

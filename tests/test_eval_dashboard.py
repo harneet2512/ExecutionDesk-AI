@@ -39,13 +39,15 @@ def setup_db():
         pass
 
     try:
-        from backend.db.connect import init_db, _close_connections
+        from backend.db.connect import init_db, _close_connections, reset_canonical_db_path
         _close_connections()
+        reset_canonical_db_path()
         init_db()
         yield db_path
     finally:
-        from backend.db.connect import _close_connections
+        from backend.db.connect import _close_connections, reset_canonical_db_path as _rcp
         _close_connections()
+        _rcp()
         if old_db_url:
             os.environ["DATABASE_URL"] = old_db_url
         else:

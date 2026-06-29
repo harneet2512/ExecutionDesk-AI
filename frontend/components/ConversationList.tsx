@@ -50,7 +50,7 @@ export default function ConversationList() {
             const convs = await listConversations();
             setConversations(Array.isArray(convs) ? convs : []);
         } catch (e: any) {
-            console.error('Failed to load conversations:', e);
+            if (process.env.NODE_ENV === 'development') console.error('Failed to load conversations:', e);
             setLoadError(getFriendlySidebarError(e));
             setConversations([]);
         } finally {
@@ -71,7 +71,7 @@ export default function ConversationList() {
             setConversations(prev => [newEntry, ...prev]);
             router.push(`/chat?conversation=${conv.conversation_id}`);
         } catch (e: any) {
-            console.error('Failed to create conversation:', e);
+            if (process.env.NODE_ENV === 'development') console.error('Failed to create conversation:', e);
             setLoadError(getFriendlySidebarError(e));
         }
     };
@@ -108,7 +108,7 @@ export default function ConversationList() {
                 }
             }
         } catch (e: any) {
-            console.error('Failed to delete conversation:', e);
+            if (process.env.NODE_ENV === 'development') console.error('Failed to delete conversation:', e);
             setDeleteError(e?.message || 'Failed to delete conversation');
         } finally {
             setDeleting(false);
@@ -201,9 +201,9 @@ export default function ConversationList() {
 
             {/* Delete Confirmation Modal */}
             {deleteModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
                     <div className="theme-surface rounded-lg shadow-xl p-6 max-w-sm mx-4">
-                        <h3 className="text-lg font-semibold theme-text mb-2">
+                        <h3 id="delete-dialog-title" className="text-lg font-semibold theme-text mb-2">
                             Delete Conversation
                         </h3>
                         <p className="theme-text-secondary mb-4">

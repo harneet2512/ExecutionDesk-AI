@@ -2,16 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { executeCommandText } from '@/lib/api';
-
-interface CommandResponse {
-  run_id: string;
-  parsed_intent: any;
-  selected_asset?: string;
-  selected_order?: any;
-  decision_trace: any[];
-}
 
 export default function AgentPage() {
   const router = useRouter();
@@ -20,187 +11,137 @@ export default function AgentPage() {
   const [loading, setLoading] = useState(false);
   const [currentRun, setCurrentRun] = useState<any>(null);
   const [events, setEvents] = useState<any[]>([]);
-  const [pnlData, setPnlData] = useState<any[]>([]);
-  const [latencyData, setLatencyData] = useState<any[]>([]);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-    };
+    return () => { if (eventSourceRef.current) eventSourceRef.current.close(); };
   }, []);
 
   async function handleSubmit() {
     if (!command.trim()) return;
-
     setLoading(true);
     setEvents([]);
     setCurrentRun(null);
 
     try {
-      // Handle "replay run X" command
       if (command.toLowerCase().startsWith('replay run')) {
         const runMatch = command.match(/replay run\s+([a-zA-Z0-9_-]+)/i);
         if (runMatch) {
-          const sourceRunId = runMatch[1];
-          const result = await executeCommandText(command, executionMode, sourceRunId);
-          if (result.run_id) {
-            router.push(`/runs/${result.run_id}`);
-            return;
-          }
+          const result = await executeCommandText(command, executionMode, runMatch[1]);
+          if (result.run_id) { router.push(`/runs/${result.run_id}`); return; }
         }
       }
 
-      // Handle trade commands
       const result = await executeCommandText(command, executionMode);
       setCurrentRun(result);
-      
-      if (!result.run_id) {
-        throw new Error('No run_id returned');
-      }
-      
-      const data = { run_id: result.run_id };
+      if (!result.run_id) throw new Error('No run_id returned');
 
-      // Subscribe to SSE events
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
+      if (eventSourceRef.current) eventSourceRef.current.close();
 
-      const eventSource = new EventSource(`/api/v1/runs/${data.run_id}/events`, {
-        withCredentials: false,
-      } as any);
-
+      const eventSource = new EventSource(`/api/v1/runs/${result.run_id}/events`, { withCredentials: false } as any);
       eventSource.onmessage = (event) => {
         try {
-          const eventData = JSON.parse(event.data);
-          setEvents((prev) => [...prev, eventData]);
-        } catch (e) {
-          console.error('Failed to parse SSE event:', e);
-        }
+          setEvents((prev) => [...prev, JSON.parse(event.data)]);
+        } catch {}
       };
-
-      eventSource.onerror = () => {
-        eventSource.close();
-        setLoading(false);
-      };
-
+      eventSource.onerror = () => { eventSource.close(); setLoading(false); };
       eventSourceRef.current = eventSource;
 
-            // Poll for run completion and redirect
-            const pollInterval = setInterval(async () => {
-              try {
-                const runDetail = await fetch(`/api/v1/runs/${data.run_id}`, {
-                  headers: { 'X-Dev-Tenant': 't_default' },
-                }).then((r) => r.json());
-
-                if (runDetail.run.status === 'COMPLETED' || runDetail.run.status === 'FAILED' || runDetail.run.status === 'PAUSED') {
-                  clearInterval(pollInterval);
-                  setLoading(false);
-                  // Redirect to run detail page to see full trace
-                  router.push(`/runs/${data.run_id}`);
-                }
-              } catch (e) {
-                console.error('Poll failed:', e);
-              }
-            }, 2000);
-    } catch (error) {
-      console.error('Command failed:', error);
+      const pollInterval = setInterval(async () => {
+        try {
+          const runDetail = await fetch(`/api/v1/runs/${result.run_id}`, {
+            headers: { 'X-Dev-Tenant': 't_default' },
+          }).then((r) => r.json());
+          if (['COMPLETED', 'FAILED', 'PAUSED'].includes(runDetail.run?.status)) {
+            clearInterval(pollInterval);
+            setLoading(false);
+            router.push(`/runs/${result.run_id}`);
+          }
+        } catch {}
+      }, 2000);
+    } catch {
       setLoading(false);
     }
   }
 
   return (
-    <div className="p-8 max-w-7xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6">Agent Command Interface</h1>
+    <div className="flex-1 overflow-y-auto p-6 lg:p-8 max-w-3xl mx-auto page-enter">
+      <h1 className="text-xl font-semibold theme-text mb-1">Agent Command</h1>
+      <p className="text-sm theme-text-muted mb-6">Direct command execution with live event stream</p>
 
-      <div className="mb-6">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            placeholder='e.g., "buy the most profitable crypto of last 24hrs for $10" or "buy $10 of BTC" or "replay run run_xxx"'
-            className="flex-1 px-4 py-2 border theme-border rounded"
-            onKeyPress={(e) => e.key === 'Enter' && handleSubmit()}
-            disabled={loading}
-          />
-          <select
-            value={executionMode}
-            onChange={(e) => setExecutionMode(e.target.value)}
-            className="px-3 py-2 border theme-border rounded"
-            disabled={loading}
-          >
-            <option value="PAPER">PAPER</option>
-            <option value="LIVE">LIVE</option>
-          </select>
-          <button
-            onClick={handleSubmit}
-            disabled={loading || !command.trim()}
-            className="px-6 py-2 btn-primary rounded disabled:opacity-40"
-          >
-            {loading ? 'Executing...' : 'Execute'}
-          </button>
-        </div>
+      {/* Command input */}
+      <div className="flex gap-2 mb-6">
+        <input
+          type="text"
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          placeholder='e.g. "buy $100 of BTC" or "replay run run_xxx"'
+          className="flex-1 px-3 py-2 text-sm rounded-lg border theme-border theme-surface theme-text focus:outline-none focus:ring-1 focus:ring-[var(--color-focus-ring)]"
+          onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+          disabled={loading}
+        />
+        <select
+          value={executionMode}
+          onChange={(e) => setExecutionMode(e.target.value)}
+          className="text-xs px-2.5 py-2 rounded-lg border theme-border theme-surface theme-text"
+          disabled={loading}
+        >
+          <option value="PAPER">PAPER</option>
+          <option value="LIVE">LIVE</option>
+        </select>
+        <button
+          onClick={handleSubmit}
+          disabled={loading || !command.trim()}
+          className="px-5 py-2 text-sm font-medium btn-primary rounded-lg disabled:opacity-40"
+        >
+          {loading ? 'Running...' : 'Execute'}
+        </button>
       </div>
 
+      {/* Run result */}
       {currentRun && (
-        <div className="mb-6 p-4 theme-bg rounded">
-          <h2 className="text-xl font-bold mb-2">Command Result</h2>
-          <div className="space-y-2">
-            <p><strong>Run ID:</strong> {currentRun.run_id}</p>
-            <p><strong>Parsed Intent:</strong> {JSON.stringify(currentRun.parsed_intent, null, 2)}</p>
+        <div className="metric-card mb-6">
+          <div className="metric-label">Command Result</div>
+          <div className="space-y-1 mt-2">
+            <div className="flex gap-2 text-xs">
+              <span className="theme-text-muted">Run ID</span>
+              <span className="font-mono text-[var(--color-link)]">{currentRun.run_id}</span>
+            </div>
+            {currentRun.parsed_intent && (
+              <div className="text-xs">
+                <span className="theme-text-muted">Intent: </span>
+                <code className="text-xs theme-text">{JSON.stringify(currentRun.parsed_intent)}</code>
+              </div>
+            )}
             {currentRun.selected_asset && (
-              <p><strong>Selected Asset:</strong> {currentRun.selected_asset}</p>
+              <div className="text-xs">
+                <span className="theme-text-muted">Asset: </span>
+                <span className="font-medium theme-text">{currentRun.selected_asset}</span>
+              </div>
             )}
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        {pnlData.length > 0 && (
-          <div className="p-4 theme-surface border theme-border rounded">
-            <h3 className="text-lg font-bold mb-4 theme-text">PnL Over Time</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={pnlData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="ts" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Line type="monotone" dataKey="total_value_usd" stroke="#737373" name="Total Value (USD)" />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {latencyData.length > 0 && (
-          <div className="p-4 theme-surface border theme-border rounded">
-            <h3 className="text-lg font-bold mb-4 theme-text">Latency</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={latencyData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="ts" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="latency_ms" fill="#a3a3a3" name="Latency (ms)" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </div>
-
-      <div className="p-4 theme-surface border theme-border rounded">
-        <h3 className="text-lg font-bold mb-4 theme-text">Live Events</h3>
-        <div className="max-h-64 overflow-y-auto space-y-1">
+      {/* Live events */}
+      <div className="border theme-border rounded-lg overflow-hidden">
+        <div className="px-4 py-3 theme-elevated flex items-center justify-between">
+          <span className="section-header !mb-0">
+            {loading && <span className="live-dot mr-2" />}
+            Live Events
+          </span>
+          <span className="text-[10px] theme-text-muted tabular-nums">{events.length} events</span>
+        </div>
+        <div className="max-h-72 overflow-y-auto divide-y divide-[var(--color-border-subtle)]">
           {events.length === 0 ? (
-            <p className="theme-text-secondary">No events yet...</p>
+            <div className="px-4 py-10 text-center theme-text-muted text-sm">
+              {loading ? 'Waiting for events...' : 'Submit a command to see live events'}
+            </div>
           ) : (
             events.map((event, idx) => (
-              <div key={idx} className="text-sm p-2 theme-bg rounded">
-                <strong>{event.event_type}:</strong> {JSON.stringify(event.payload || event, null, 2)}
+              <div key={idx} className="px-4 py-2 text-xs">
+                <span className="font-semibold theme-text">{event.event_type}</span>
+                <span className="theme-text-muted ml-2">{JSON.stringify(event.payload || event).slice(0, 200)}</span>
               </div>
             ))
           )}

@@ -312,25 +312,33 @@ class TestPortfolioEvals:
             
             # Ensure tenant exists (FK constraint)
             cursor.execute(
-                "INSERT OR IGNORE INTO tenants (tenant_id, name, execution_mode) VALUES (?, 'Test Tenant', 'PAPER')",
+                "INSERT OR IGNORE INTO tenants (tenant_id, name) VALUES (?, 'Test Tenant')",
                 (tenant_id,)
             )
             
             # Create run with all required fields
             cursor.execute(
-                """INSERT INTO runs (run_id, tenant_id, status, execution_mode, strategy_id, strategy_version, created_at) 
-                   VALUES (?, ?, 'COMPLETED', 'PAPER', 'test_strategy', '1.0', ?)""",
+                """INSERT INTO runs (run_id, tenant_id, status, execution_mode, created_at)
+                   VALUES (?, ?, 'COMPLETED', 'PAPER', ?)""",
                 (run_id, tenant_id, now_iso())
             )
             
+            # Create dag_node for tool_calls FK
+            node_id = new_id("node_")
+            cursor.execute(
+                """INSERT INTO dag_nodes (node_id, run_id, name, node_type, status, started_at)
+                   VALUES (?, ?, 'research', 'RESEARCH', 'COMPLETED', ?)""",
+                (node_id, run_id, now_iso())
+            )
+
             # Create tool call
             tool_call_id = new_id("tool_")
             cursor.execute(
                 """INSERT INTO tool_calls (id, run_id, node_id, tool_name, mcp_server, request_json, status, ts)
-                   VALUES (?, ?, '', 'get_accounts', 'coinbase_provider', '{}', 'SUCCESS', ?)""",
-                (tool_call_id, run_id, now_iso())
+                   VALUES (?, ?, ?, 'get_accounts', 'coinbase_provider', '{}', 'SUCCESS', ?)""",
+                (tool_call_id, run_id, node_id, now_iso())
             )
-            
+
             # Create portfolio analysis snapshot with evidence refs
             brief = {
                 "as_of": now_iso(),
@@ -373,14 +381,14 @@ class TestPortfolioEvals:
             
             # Ensure tenant exists (FK constraint)
             cursor.execute(
-                "INSERT OR IGNORE INTO tenants (tenant_id, name, execution_mode) VALUES (?, 'Test Tenant', 'PAPER')",
+                "INSERT OR IGNORE INTO tenants (tenant_id, name) VALUES (?, 'Test Tenant')",
                 (tenant_id,)
             )
             
             # Create run with all required fields
             cursor.execute(
-                """INSERT INTO runs (run_id, tenant_id, status, execution_mode, strategy_id, strategy_version, created_at) 
-                   VALUES (?, ?, 'COMPLETED', 'PAPER', 'test_strategy', '1.0', ?)""",
+                """INSERT INTO runs (run_id, tenant_id, status, execution_mode, created_at)
+                   VALUES (?, ?, 'COMPLETED', 'PAPER', ?)""",
                 (run_id, tenant_id, now_iso())
             )
             
@@ -430,7 +438,7 @@ class TestPortfolioAPIIntegration:
             
             # Ensure tenant exists
             cursor.execute(
-                "INSERT OR IGNORE INTO tenants (tenant_id, name, execution_mode) VALUES ('t_default', 'Default Tenant', 'PAPER')"
+                "INSERT OR IGNORE INTO tenants (tenant_id, name) VALUES ('t_default', 'Default Tenant')"
             )
             
             balances = {"BTC": 0.1, "ETH": 1.0, "USD": 500.0}
@@ -482,7 +490,7 @@ class TestPortfolioAPIIntegration:
         with get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT OR IGNORE INTO tenants (tenant_id, name, execution_mode) VALUES ('t_default', 'Default Tenant', 'PAPER')"
+                "INSERT OR IGNORE INTO tenants (tenant_id, name) VALUES ('t_default', 'Default Tenant')"
             )
             conn.commit()
         

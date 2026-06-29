@@ -543,21 +543,21 @@ export async function getRunTelemetry(runId: string): Promise<RunTelemetry> {
 
 export async function confirmTrade(confirmationId: string): Promise<any> {
   if (!confirmationId || confirmationId === 'undefined' || confirmationId === 'null') {
-    console.error('[API] confirmTrade called with invalid ID:', confirmationId);
+    if (process.env.NODE_ENV === 'development') console.error('[API] confirmTrade called with invalid ID:', confirmationId);
     throw new Error('Invalid confirmation ID: ' + confirmationId);
   }
   const url = '/api/v1/confirmations/' + confirmationId + '/confirm';
-  console.log('[API] confirmTrade calling:', { confirmationId, url });
+  if (process.env.NODE_ENV === 'development') console.log('[API] confirmTrade calling:', { confirmationId, url });
 
   try {
     const result = await apiFetch(url, {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    console.log('[API] confirmTrade success:', result);
+    if (process.env.NODE_ENV === 'development') console.log('[API] confirmTrade success:', result);
     return result;
   } catch (e: any) {
-    console.error('[API] confirmTrade FAILED:', {
+    if (process.env.NODE_ENV === 'development') console.error('[API] confirmTrade FAILED:', {
       confirmationId,
       url,
       statusCode: e.statusCode ?? 'unknown',
@@ -571,7 +571,7 @@ export async function confirmTrade(confirmationId: string): Promise<any> {
 
 export async function cancelTrade(confirmationId: string): Promise<any> {
   if (!confirmationId || confirmationId === 'undefined' || confirmationId === 'null') {
-    console.error('[API] cancelTrade called with invalid ID:', confirmationId);
+    if (process.env.NODE_ENV === 'development') console.error('[API] cancelTrade called with invalid ID:', confirmationId);
     throw new Error('Invalid confirmation ID: ' + confirmationId);
   }
   return apiFetch('/api/v1/confirmations/' + confirmationId + '/cancel', {
@@ -732,4 +732,122 @@ export async function fetchEvalSummary(window: string = '24h'): Promise<EvalSumm
 
 export async function fetchConversationEvals(conversationId: string): Promise<{ evals: any[]; conversation_id: string }> {
   return apiFetch('/api/v1/evals/conversations/' + conversationId);
+}
+
+// Client Operations Dashboard API
+export interface ClientProfile {
+  tenant_id: string;
+  display_name: string | null;
+  health_score: number;
+  health_classification: string;
+  total_runs: number;
+  successful_runs: number;
+  failed_runs: number;
+  total_orders: number;
+  total_volume_usd: number;
+  last_activity_at: string | null;
+  first_seen_at: string | null;
+  computed_at: string | null;
+}
+
+export interface ClientHealth {
+  tenant_id: string;
+  score: number;
+  classification: string;
+  components: {
+    activity: number;
+    success_rate: number;
+    volume_trend: number;
+    error_frequency: number;
+    feature_adoption: number;
+  };
+  stats: {
+    total_runs: number;
+    successful_runs: number;
+    failed_runs: number;
+    total_orders: number;
+    total_volume_usd: number;
+    last_activity_at: string | null;
+    first_seen_at: string | null;
+    runs_7d: number;
+    errors_7d: number;
+  };
+}
+
+export interface ClientAlert {
+  alert_id: string;
+  tenant_id: string;
+  alert_type: string;
+  severity: string;
+  message: string;
+  acknowledged: number;
+  created_at: string;
+}
+
+export interface ClientIssue {
+  issue_id: string;
+  tenant_id: string;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  category: string;
+  assigned_to: string | null;
+  created_by: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+  comment_count?: number;
+  comments?: ClientIssueComment[];
+}
+
+export interface ClientIssueComment {
+  comment_id: string;
+  issue_id: string;
+  author: string;
+  content: string;
+  created_at: string;
+}
+
+export async function listClients(classification?: string): Promise<{ clients: ClientProfile[]; total: number }> {
+  const params = classification ? `?classification=${classification}` : '';
+  return apiFetch('/api/v1/clients' + params);
+}
+
+export async function getClientProfile(tenantId: string): Promise<{
+  tenant_id: string;
+  health: ClientHealth;
+  alerts: ClientAlert[];
+  issues: ClientIssue[];
+}> {
+  return apiFetch('/api/v1/clients/' + tenantId);
+}
+
+export async function refreshClients(): Promise<{ refreshed: number; results: any[] }> {
+  return apiFetch('/api/v1/clients/refresh', { method: 'POST' });
+}
+
+export async function listClientIssues(tenantId: string, status?: string): Promise<{ issues: ClientIssue[]; total: number }> {
+  const params = status ? `?status=${status}` : '';
+  return apiFetch('/api/v1/clients/' + tenantId + '/issues' + params);
+}
+
+export async function createClientIssue(tenantId: string, data: { title: string; description?: string; priority?: string; category?: string }): Promise<ClientIssue> {
+  return apiFetch('/api/v1/clients/' + tenantId + '/issues', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateClientIssue(tenantId: string, issueId: string, data: { status?: string; priority?: string; assigned_to?: string; comment?: string }): Promise<ClientIssue> {
+  return apiFetch('/api/v1/clients/' + tenantId + '/issues/' + issueId, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function acknowledgeAlert(tenantId: string, alertId: string): Promise<{ alert_id: string; acknowledged: boolean }> {
+  return apiFetch('/api/v1/clients/' + tenantId + '/alerts/' + alertId + '/acknowledge', {
+    method: 'POST',
+  });
 }

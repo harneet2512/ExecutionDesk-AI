@@ -16,7 +16,12 @@ if [ -f "test_enterprise.db" ]; then
 fi
 
 echo "Running backend tests..."
-pytest tests/ -v --tb=short
+# Pass --cov to enable coverage: ./scripts/test.sh --cov
+if [[ " $* " == *" --cov "* ]] || [[ "$1" == "--cov" ]]; then
+    pytest tests/ -v --tb=short --cov=backend --cov-report=term-missing
+else
+    pytest tests/ -v --tb=short
+fi
 
 # Frontend smoke test (if Playwright not available, skip)
 if [ -d "frontend" ] && command -v npx &> /dev/null; then

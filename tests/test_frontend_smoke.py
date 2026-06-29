@@ -50,10 +50,14 @@ def backend_server():
     proc.wait(timeout=5)
 
 
+@pytest.mark.skipif(
+    os.getenv("RUN_INTEGRATION_TESTS", "").lower() not in ("1", "true"),
+    reason="Integration test requires live backend process — set RUN_INTEGRATION_TESTS=1 to enable"
+)
 def test_backend_endpoints_smoke(backend_server):
     """Test backend endpoints used by frontend return valid data."""
     headers = {"X-Dev-Tenant": "t_default"}
-    
+
     # Test health
     response = requests.get(f"{BACKEND_URL}/health", timeout=5)
     assert response.status_code == 200

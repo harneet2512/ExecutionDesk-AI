@@ -392,9 +392,13 @@ def make_run(
 @pytest.fixture
 def bypass_auth():
     """Bypass authentication for tests."""
+    old_val = os.environ.get("TEST_AUTH_BYPASS")
     os.environ["TEST_AUTH_BYPASS"] = "true"
     yield
-    os.environ.pop("TEST_AUTH_BYPASS", None)
+    if old_val is not None:
+        os.environ["TEST_AUTH_BYPASS"] = old_val
+    else:
+        os.environ["TEST_AUTH_BYPASS"] = "true"
 
 
 # === ASYNC TEST SUPPORT ===

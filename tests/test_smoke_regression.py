@@ -152,7 +152,7 @@ class TestF7HeadlinesMissingTables:
             mock_ctx.cursor.return_value = mock_cursor
             mock_conn.return_value = mock_ctx
 
-            headlines, fetch_failed, _diag = _fetch_headlines("BTC")
+            headlines, _market, fetch_failed, _diag = _fetch_headlines("BTC")
 
         assert headlines == []
         assert fetch_failed is True

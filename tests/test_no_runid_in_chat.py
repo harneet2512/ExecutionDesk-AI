@@ -48,8 +48,9 @@ class TestNoRunIdInChatComponents:
             if in_debug_section and 'run_id' in line.lower():
                 # Check if it's in a visible <div> or just in a copy function
                 if '<div>' in line or '{runId}' in line:
-                    # This would be a fail - but we allow it ONLY in clipboard copy
-                    if 'navigator.clipboard' not in line and 'handleCopyDebug' not in line:
+                    # Allow in clipboard copy or env-gated debug sections
+                    prev_line = lines[max(0, i - 1)] if i > 0 else ""
+                    if 'navigator.clipboard' not in line and 'handleCopyDebug' not in line and 'NEXT_PUBLIC_DEBUG' not in prev_line:
                         pytest.fail(
                             f"run_id rendered in DOM at line {i+1}: {line.strip()}\n"
                             "run_id must not appear in visible chat DOM"

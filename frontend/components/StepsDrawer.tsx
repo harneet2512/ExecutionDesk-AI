@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import ArtifactPanel from './ArtifactPanel';
+import { CheckIcon, ArrowPathIcon, XMarkIcon } from './icons';
 
 export interface Step {
     step_id: string;
@@ -31,13 +32,13 @@ export default function StepsDrawer({ steps, isOpen, onClose, runId }: StepsDraw
     const getStatusIcon = (status: string) => {
         switch (status) {
             case 'done':
-                return '✓';
+                return <CheckIcon className="w-4 h-4" />;
             case 'running':
-                return '⟳';
+                return <ArrowPathIcon className="w-4 h-4" />;
             case 'failed':
-                return '✗';
+                return <XMarkIcon className="w-4 h-4" />;
             default:
-                return '○';
+                return <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}><circle cx="12" cy="12" r="8" /></svg>;
         }
     };
 
@@ -79,8 +80,9 @@ export default function StepsDrawer({ steps, isOpen, onClose, runId }: StepsDraw
                         <button
                             onClick={onClose}
                             className="p-1 rounded hover:bg-[var(--color-fill-ghost-hover)] theme-text-secondary"
+                            aria-label="Close steps drawer"
                         >
-                            ✕
+                            <XMarkIcon className="w-4 h-4" />
                         </button>
                     </div>
                 </div>

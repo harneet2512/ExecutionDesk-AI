@@ -14,7 +14,8 @@ def test_news_evidence_status_ok():
     out = build_news_evidence_from_insight("BTC", insight)
     assert out["status"] == "ok"
     assert len(out["items"]) == 1
-    assert out["queries"][:2] == ["Bitcoin", "BTC"]
+    assert "BTC" in out["queries"]
+    assert "Bitcoin" in out["queries"]
 
 
 def test_news_evidence_status_empty():

@@ -10,7 +10,12 @@ Run:
 """
 import pytest
 import re
-from playwright.sync_api import Page, expect
+
+try:
+    from playwright.sync_api import Page, expect
+    import pytest_playwright  # noqa: F401 – ensures the `page` fixture is available
+except ImportError:
+    pytest.skip("playwright or pytest-playwright not installed", allow_module_level=True)
 
 
 BASE_URL = "http://localhost:3000"

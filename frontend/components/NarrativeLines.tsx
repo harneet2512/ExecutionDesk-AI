@@ -85,8 +85,7 @@ function resolveRef(ref: string | EvidenceRef): ResolvedRef {
 
 const chipActiveClass =
   'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ' +
-  'bg-[#4a7bc8]/10 text-[#4a7bc8] hover:bg-[#4a7bc8]/20 hover:text-[#6b9ae8] ' +
-  'dark:bg-[#7ba3f5]/10 dark:text-[#7ba3f5] dark:hover:bg-[#7ba3f5]/20 dark:hover:text-[#9bb8f8] ' +
+  'bg-[var(--color-link)]/10 text-[var(--color-link)] hover:bg-[var(--color-link)]/20 hover:text-[var(--color-link-hover)] ' +
   'transition-colors cursor-pointer';
 
 const chipDisabledClass =

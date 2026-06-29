@@ -451,7 +451,7 @@ class PolygonMarketDataProvider(MarketDataProvider):
                 return f"EOD data is {days_old} days old (weekend/holiday delay)"
             else:
                 return f"Warning: EOD data is {days_old} days old"
-        except:
+        except Exception:
             return None
 
 

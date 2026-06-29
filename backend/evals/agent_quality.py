@@ -131,9 +131,9 @@ def _check_plan_completeness(cursor, run_id: str) -> Tuple[bool, str]:
     if row["intent_json"]:
         try:
             intent = json.loads(row["intent_json"])
-        except:
+        except Exception:
             pass
-    
+
     is_trade_run = intent.get("intent") == "TRADE_EXECUTION" or "buy" in str(intent).lower()
     
     if is_trade_run:
@@ -264,9 +264,9 @@ def _check_constraint_respect(cursor, run_id: str, tenant_id: str) -> Tuple[bool
         if run_row["metadata_json"]:
             try:
                 metadata = json.loads(run_row["metadata_json"])
-            except:
+            except Exception:
                 pass
-        
+
         if not metadata.get("confirmed") and not metadata.get("confirmation_id"):
             # Check if any orders were placed
             if orders:

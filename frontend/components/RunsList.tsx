@@ -19,7 +19,7 @@ export default function RunsList() {
             const runList = await listRuns();
             setRuns(runList);
         } catch (e) {
-            console.error('Failed to load runs:', e);
+            if (process.env.NODE_ENV === 'development') console.error('Failed to load runs:', e);
         } finally {
             setLoading(false);
         }

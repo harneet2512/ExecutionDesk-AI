@@ -22,7 +22,7 @@ export default function Error({
     error.message?.includes('Failed to fetch dynamically imported module');
 
   useEffect(() => {
-    console.error('[ErrorBoundary]', error);
+    if (process.env.NODE_ENV === 'development') console.error('[ErrorBoundary]', error);
 
     // Auto-retry once for chunk load errors (stale .next artifacts)
     if (isChunkError) {

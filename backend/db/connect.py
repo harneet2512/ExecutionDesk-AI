@@ -1,30 +1,50 @@
-"""Database connection management."""
+"""Database connection management.
+
+Supports both SQLite (default) and PostgreSQL backends.
+The active backend is determined by the DATABASE_URL setting:
+  - sqlite:///path  -> SQLite (file-based, no pool)
+  - postgresql://... -> PostgreSQL (ThreadedConnectionPool from psycopg2)
+"""
 import sqlite3
 import os
 import time
 import random
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Generator, Optional, Any
 from backend.core.config import get_settings
 from backend.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# DB busy/lock error substrings
+# DB busy/lock error substrings (SQLite only)
 _BUSY_ERRORS = ("database is locked", "database table is locked")
 
 # INV-5: Canonical DB path — resolved once, asserted on every connection.
 _CANONICAL_DB_PATH: Optional[str] = None
 
+# PostgreSQL connection pool (lazily initialized)
+_pg_pool = None
+
+
+# ---------------------------------------------------------------------------
+# Backend detection
+# ---------------------------------------------------------------------------
+
+def _is_postgres(url: str) -> bool:
+    """Return True if DATABASE_URL points to PostgreSQL."""
+    return url.startswith("postgresql://") or url.startswith("postgres://") or url.startswith("postgresql+psycopg2://")
+
 
 def _close_connections():
-    """Close cached connections for test isolation.
-
-    Since get_conn() creates a fresh connection per call (no pool),
-    this is a no-op. Provided for test fixture compatibility.
-    """
-    pass
+    """Close cached connections / pool for test isolation."""
+    global _pg_pool
+    if _pg_pool is not None:
+        try:
+            _pg_pool.closeall()
+        except Exception:
+            pass
+        _pg_pool = None
 
 
 def reset_canonical_db_path():
@@ -33,12 +53,55 @@ def reset_canonical_db_path():
     _CANONICAL_DB_PATH = None
 
 
+# ---------------------------------------------------------------------------
+# PostgreSQL pool management
+# ---------------------------------------------------------------------------
+
+def _get_pg_pool():
+    """Return (or lazily create) the psycopg2 ThreadedConnectionPool."""
+    global _pg_pool
+    if _pg_pool is not None:
+        return _pg_pool
+
+    try:
+        from psycopg2.pool import ThreadedConnectionPool
+        import psycopg2.extras
+    except ImportError as e:
+        raise RuntimeError(
+            "psycopg2 is required for PostgreSQL support. "
+            "Install it: pip install psycopg2-binary>=2.9.9"
+        ) from e
+
+    settings = get_settings()
+    dsn = settings.database_url
+    # Strip driver suffix if present (e.g. postgresql+psycopg2://)
+    if dsn.startswith("postgresql+psycopg2://"):
+        dsn = "postgresql://" + dsn[len("postgresql+psycopg2://"):]
+
+    pool_min = getattr(settings, "db_pool_min", 2)
+    pool_max = getattr(settings, "db_pool_max", 10)
+
+    _pg_pool = ThreadedConnectionPool(pool_min, pool_max, dsn)
+    logger.info("PostgreSQL pool created (min=%d, max=%d)", pool_min, pool_max)
+    return _pg_pool
+
+
+# ---------------------------------------------------------------------------
+# Canonical DB path (SQLite only)
+# ---------------------------------------------------------------------------
+
 def get_canonical_db_path() -> str:
-    """Return the canonical absolute DB file path, resolving it on first call."""
+    """Return the canonical absolute DB file path, resolving it on first call.
+
+    For PostgreSQL URLs, returns the DSN string directly (no path resolution).
+    """
     global _CANONICAL_DB_PATH
     if _CANONICAL_DB_PATH is not None:
         return _CANONICAL_DB_PATH
     settings = get_settings()
+    if _is_postgres(settings.database_url):
+        _CANONICAL_DB_PATH = settings.database_url
+        return _CANONICAL_DB_PATH
     raw = _parse_db_url(settings.database_url)
     resolved = os.path.abspath(raw)
     _CANONICAL_DB_PATH = resolved
@@ -55,9 +118,32 @@ def _parse_db_url(url: str) -> str:
         return url
 
 
+# ---------------------------------------------------------------------------
+# Connection context managers
+# ---------------------------------------------------------------------------
+
 @contextmanager
-def get_conn() -> Generator[sqlite3.Connection, None, None]:
-    """Get database connection context manager."""
+def get_conn():
+    """Get database connection context manager.
+
+    Returns a sqlite3.Connection for SQLite URLs, or a psycopg2 connection
+    (with RealDictCursor) for PostgreSQL URLs. Both auto-commit on clean
+    exit and rollback on exception.
+    """
+    settings = get_settings()
+
+    if _is_postgres(settings.database_url):
+        with _get_conn_pg() as conn:
+            yield conn
+        return
+
+    with _get_conn_sqlite() as conn:
+        yield conn
+
+
+@contextmanager
+def _get_conn_sqlite():
+    """SQLite connection context manager (original behaviour)."""
     global _CANONICAL_DB_PATH
 
     db_path = get_canonical_db_path()
@@ -75,13 +161,13 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
     db_dir = os.path.dirname(db_path)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
-    
+
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA foreign_keys = ON")
-    
+
     try:
         yield conn
         conn.commit()
@@ -90,6 +176,26 @@ def get_conn() -> Generator[sqlite3.Connection, None, None]:
         raise
     finally:
         conn.close()
+
+
+@contextmanager
+def _get_conn_pg():
+    """PostgreSQL connection context manager using ThreadedConnectionPool."""
+    import psycopg2.extras
+
+    pool = _get_pg_pool()
+    conn = pool.getconn()
+    # Use RealDictCursor so rows behave like dicts (row_get works with .get())
+    conn.cursor_factory = psycopg2.extras.RealDictCursor
+
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn)
 
 
 @contextmanager
@@ -120,9 +226,17 @@ def get_conn_retry(max_retries: int = 3) -> Generator[sqlite3.Connection, None, 
 
 
 def row_get(row, key, default=None):
-    """Safe .get() for sqlite3.Row objects (which don't support .get())."""
+    """Safe .get() for both sqlite3.Row and dict-like rows (psycopg2 RealDictRow).
+
+    sqlite3.Row does not support .get(), so we fall back to key-in-keys check.
+    dict / RealDictRow supports .get() natively.
+    """
     if row is None:
         return default
+    # Fast path: dict-like rows (psycopg2 RealDictRow, plain dict)
+    if isinstance(row, dict):
+        return row.get(key, default)
+    # sqlite3.Row path
     try:
         return row[key] if key in row.keys() else default
     except (IndexError, KeyError):

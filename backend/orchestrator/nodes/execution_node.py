@@ -310,6 +310,117 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
             "safe_summary": f"Generated {len(ticket_ids)} order ticket(s) for manual execution"
         }
 
+    # ── PREDICTION MARKET EXECUTION ──
+    if asset_class in ("PREDICTION", "PREDICTION_MARKET"):
+        order_ids = []
+        order_statuses = {}
+
+        for order in proposal.get("orders", []):
+            symbol = order.get("symbol", "")
+            side = order.get("side", "BUY").upper()
+            notional = order.get("notional_usd", 0)
+            outcome = order.get("outcome", "YES").upper()
+            limit_price = order.get("limit_price") or order.get("yes_price") or 0.50
+
+            if execution_mode == "LIVE":
+                from backend.providers.polymarket_clob import PolymarketProvider
+                pm_provider = PolymarketProvider()
+                placed_order_id = pm_provider.place_order(
+                    run_id=run_id,
+                    tenant_id=tenant_id,
+                    symbol=symbol,
+                    side=side,
+                    notional_usd=notional,
+                    outcome=outcome,
+                    limit_price=limit_price,
+                )
+            else:
+                placed_order_id = new_id("ord_")
+                qty = notional / limit_price if limit_price > 0 else notional
+                with get_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        """INSERT INTO orders (
+                            order_id, run_id, tenant_id, provider, symbol, side,
+                            order_type, qty, notional_usd, status, created_at,
+                            filled_qty, avg_fill_price, total_fees, status_updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            placed_order_id, run_id, tenant_id, "PAPER_POLYMARKET",
+                            symbol, side, "LIMIT", qty, notional, "FILLED",
+                            now_iso(), qty, limit_price, 0.0, now_iso(),
+                        ),
+                    )
+                    evt_id = new_id("evt_")
+                    cursor.execute(
+                        """INSERT INTO order_events (id, order_id, event_type, payload_json, ts)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (evt_id, placed_order_id, "FILLED", json.dumps({
+                            "outcome": outcome, "limit_price": limit_price,
+                            "size": qty, "provider": "PAPER_POLYMARKET",
+                        }, default=str), now_iso()),
+                    )
+                    conn.commit()
+
+            order_ids.append(placed_order_id)
+            order_statuses[placed_order_id] = "FILLED" if execution_mode == "PAPER" else "SUBMITTED"
+
+            await emit_event(run_id, "ORDER_SUBMITTED", {
+                "order_id": placed_order_id,
+                "symbol": symbol,
+                "side": side,
+                "notional_usd": notional,
+                "outcome": outcome,
+                "limit_price": limit_price,
+                "provider": f"POLYMARKET_{execution_mode}",
+            }, tenant_id=tenant_id)
+
+            if execution_mode == "PAPER":
+                await emit_event(run_id, "ORDER_FILLED", {
+                    "order_id": placed_order_id,
+                    "symbol": symbol,
+                    "side": side,
+                    "notional_usd": notional,
+                    "outcome": outcome,
+                    "filled_qty": notional / limit_price if limit_price > 0 else notional,
+                    "avg_fill_price": limit_price,
+                    "provider": "PAPER_POLYMARKET",
+                }, tenant_id=tenant_id)
+
+        receipt_artifact = {
+            "run_id": run_id,
+            "execution_mode": execution_mode,
+            "asset_class": asset_class,
+            "orders": [{"order_id": oid, "status": order_statuses.get(oid)} for oid in order_ids],
+            "venue": {
+                "name": "Polymarket CLOB" if execution_mode == "LIVE" else "Paper (Polymarket simulated)",
+                "execution_mode": execution_mode,
+                "order_type": "limit",
+            },
+            "created_at": now_iso(),
+        }
+        try:
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """INSERT INTO run_artifacts (run_id, step_name, artifact_type, artifact_json, created_at)
+                       VALUES (?, 'execution', 'trade_receipt', ?, ?)""",
+                    (run_id, json.dumps(receipt_artifact, default=str), now_iso()),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+        all_filled = all(s == "FILLED" for s in order_statuses.values())
+        return {
+            "order_ids": order_ids,
+            "order_statuses": order_statuses,
+            "fill_confirmed": all_filled,
+            "evidence_refs": [{"order_ids": order_ids}],
+            "safe_summary": f"Placed {len(order_ids)} prediction market order(s) via {execution_mode}; "
+                            + ("fills confirmed." if all_filled else "pending fill."),
+        }
+
     # ── PRE-TRADE SNAPSHOT (idempotent) ──
     # Capture Coinbase-accurate balances before placing orders so charts get >=2 data points.
     try:
@@ -651,7 +762,7 @@ async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
                 "venue": {
                     "name": "Coinbase" if execution_mode == "LIVE" else "Paper (simulated)",
                     "execution_mode": execution_mode,
-                    "order_type": "market",
+                    "order_type": "market" if asset_class != "PREDICTION_MARKET" else "limit",
                 },
                 "submitted_at": now_iso(),
                 "created_at": now_iso(),

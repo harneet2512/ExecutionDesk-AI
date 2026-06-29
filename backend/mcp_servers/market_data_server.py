@@ -10,10 +10,15 @@ logger = get_logger(__name__)
 
 class MarketDataMCPServer:
     """MCP server for market data fetching."""
-    
+
     def __init__(self):
-        # Use provider factory to select appropriate provider
-        self.provider = get_market_data_provider()
+        self._provider = None
+
+    @property
+    def provider(self):
+        if self._provider is None:
+            self._provider = get_market_data_provider()
+        return self._provider
     
     def fetch_candles(
         self,

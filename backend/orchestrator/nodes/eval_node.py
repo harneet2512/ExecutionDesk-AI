@@ -3,6 +3,9 @@ import json
 from backend.db.connect import get_conn
 from backend.core.ids import new_id
 from backend.core.time import now_iso
+from backend.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 async def execute(run_id: str, node_id: str, tenant_id: str) -> dict:
     """Execute eval node."""

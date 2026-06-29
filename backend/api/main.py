@@ -9,7 +9,8 @@ from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from backend.core.logging import setup_logging, get_logger
 from backend.db.connect import init_db
-from backend.api.routes import runs, approvals, portfolio, orders, ops, market, policies, agent, commands, trace, analytics, chat, evals, analytics_pnl, analytics_slippage, analytics_risk, conversations, telemetry, news, confirmations, prometheus, trade_tickets, debug
+from backend.api.routes import runs, approvals, portfolio, orders, ops, market, policies, agent, commands, trace, analytics, chat, evals, analytics_pnl, analytics_slippage, analytics_risk, analytics_clients, conversations, telemetry, news, confirmations, prometheus, trade_tickets, debug  # noqa: E501
+from backend.api.routes import ws_market_data  # noqa: E501
 from backend.api.auth import router as auth_router
 
 # Thread/async-safe request ID propagation via contextvars
@@ -376,10 +377,30 @@ if os.getenv("ENABLE_AUDIT_LOG", "0").lower() in ("1", "true", "yes"):
 else:
     logger.info("Audit logging middleware disabled")
 
-# CORS
+# ---------------------------------------------------------------------------
+# CORS Configuration
+# ---------------------------------------------------------------------------
+# The origins below are for LOCAL DEVELOPMENT only (Next.js dev server).
+# In production, restrict origins to your actual domain(s) by setting the
+# CORS_ALLOWED_ORIGINS environment variable (comma-separated list):
+#
+#   CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+#
+# Leaving CORS_ALLOWED_ORIGINS unset defaults to the localhost list below,
+# which is safe for development but MUST NOT be used in production.
+# ---------------------------------------------------------------------------
+_default_cors_origins = [
+    "http://localhost:3000", "http://localhost:3001",
+    "http://localhost:3002", "http://localhost:3003",
+    "http://127.0.0.1:3000", "http://127.0.0.1:3001",
+    "http://127.0.0.1:3002", "http://127.0.0.1:3003",
+]
+_cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "")
+_cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else _default_cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://localhost:3003", "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:3002", "http://127.0.0.1:3003"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -403,6 +424,7 @@ app.include_router(evals.router, prefix="/api/v1/evals", tags=["evals"])
 app.include_router(analytics_pnl.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(analytics_slippage.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(analytics_risk.router, prefix="/api/v1/analytics", tags=["analytics"])
+app.include_router(analytics_clients.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(conversations.router, prefix="/api/v1/conversations", tags=["conversations"])
 app.include_router(telemetry.router, prefix="/api/v1/telemetry", tags=["telemetry"])
 app.include_router(news.router, prefix="/api/v1/news", tags=["news"])
@@ -410,6 +432,27 @@ app.include_router(confirmations.router, prefix="/api/v1/confirmations", tags=["
 app.include_router(trade_tickets.router)  # trade_tickets has its own prefix
 app.include_router(prometheus.router, prefix="/api/v1", tags=["observability"])
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
+
+# Prediction Markets (Polymarket)
+from backend.api.routes import markets as prediction_markets  # noqa: E402
+app.include_router(prediction_markets.router, prefix="/api/v1/markets", tags=["markets"])
+
+# API keys & webhooks (Phase 9: Public API)
+from backend.api.routes import api_keys as _api_keys_routes  # noqa: E402
+from backend.api.routes import webhooks as _webhooks_routes  # noqa: E402
+app.include_router(_api_keys_routes.router, prefix="/api/v1/api-keys", tags=["api-keys"])
+app.include_router(_webhooks_routes.router, prefix="/api/v1/webhooks", tags=["webhooks"])
+
+# Runbooks (Phase 8: Runbook/Playbook System)
+from backend.api.routes import runbooks as _runbooks_routes  # noqa: E402
+app.include_router(_runbooks_routes.router, prefix="/api/v1/runbooks", tags=["runbooks"])
+
+# Client Operations Dashboard (Phase 7)
+from backend.api.routes import clients as _clients_routes  # noqa: E402
+app.include_router(_clients_routes.router, prefix="/api/v1/clients", tags=["clients"])
+
+# WebSocket Market Data Streaming (Phase 10)
+app.include_router(ws_market_data.router, prefix="/api/v1", tags=["websocket"])
 
 # Enable FastAPI OpenTelemetry instrumentation only when explicitly enabled.
 if _enable_otel:
@@ -543,13 +586,55 @@ async def startup_news_ingest():
     thread.start()
 
 
+@app.on_event("startup")
+async def startup_ws_manager():
+    """Start WebSocket manager background tasks (heartbeat, price fetcher)."""
+    try:
+        from backend.services.ws_manager import get_ws_manager
+        mgr = get_ws_manager()
+        await mgr.start_background_tasks()
+        logger.info("WebSocket manager background tasks started")
+    except Exception as e:
+        logger.warning("WebSocket manager startup failed (non-fatal): %s", str(e)[:200])
+
+
+@app.on_event("startup")
+async def startup_seed_runbooks():
+    """Seed default runbooks so the Runbooks page is populated on first launch."""
+    import threading
+
+    def _bg_seed():
+        try:
+            from backend.db.seed_runbooks import seed_runbooks
+            count = seed_runbooks()
+            if count > 0:
+                logger.info("Seeded %d runbooks on startup", count)
+            else:
+                logger.info("Runbooks already seeded, nothing to insert")
+        except Exception as e:
+            logger.warning("Runbook seeding failed (non-fatal): %s", str(e)[:200])
+
+    thread = threading.Thread(target=_bg_seed, daemon=True)
+    thread.start()
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean shutdown: close OpenTelemetry tracer provider."""
+    """Clean shutdown: close OpenTelemetry tracer provider and WS manager."""
+    # Stop WebSocket manager
+    try:
+        from backend.services.ws_manager import get_ws_manager
+        mgr = get_ws_manager()
+        await mgr.stop_background_tasks()
+        logger.info("WebSocket manager shut down cleanly")
+    except Exception as e:
+        logger.warning("WebSocket manager shutdown failed: %s", str(e)[:200])
+
+    # Stop OpenTelemetry
     try:
         from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
-        
+
         provider = trace.get_tracer_provider()
         if isinstance(provider, TracerProvider):
             provider.shutdown()

@@ -32,6 +32,7 @@ export default function ChatHeader({
                                     ? 'theme-elevated theme-text'
                                     : 'btn-secondary'
                                 }`}
+                            aria-label={stepsOpen ? 'Hide execution steps' : 'Show execution steps'}
                         >
                             {stepsOpen ? 'Hide Steps' : 'Show Steps'}
                         </button>
@@ -39,6 +40,7 @@ export default function ChatHeader({
                     <button
                         onClick={onNewChat}
                         className="px-3 py-2 btn-primary rounded-lg text-sm font-medium transition-colors shadow-sm"
+                        aria-label="Start a new chat"
                     >
                         + New Chat
                     </button>

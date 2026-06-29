@@ -11,6 +11,7 @@ sse-starlette>=1.8.0
 
 # Database
 sqlalchemy==2.0.23
+psycopg2-binary>=2.9.9
 
 # News
 feedparser>=6.0.10
@@ -48,6 +49,7 @@ plotly==5.18.0
 # Testing
 pytest==7.4.3
 pytest-asyncio==0.21.1
+pytest-cov>=4.1.0  # Coverage reporting
 requests==2.31.0  # For frontend smoke tests
 
 # JWT for Coinbase CDP (ES256)

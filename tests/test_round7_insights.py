@@ -143,7 +143,7 @@ class TestInsightGeneration:
         ]
 
         with patch("backend.services.pre_confirm_insight._fetch_price_data", new_callable=AsyncMock) as mock_price, \
-             patch("backend.services.pre_confirm_insight._fetch_headlines", return_value=(mock_headlines, False, "")):
+             patch("backend.services.pre_confirm_insight._fetch_headlines", return_value=(mock_headlines, [], False, {})):
             mock_price.return_value = {
                 "price": 71000.0,
                 "change_24h_pct": 3.2,

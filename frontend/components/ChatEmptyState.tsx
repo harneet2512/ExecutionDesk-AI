@@ -1,6 +1,7 @@
 'use client';
 
 import SuggestionChips from './SuggestionChips';
+import { ArrowTrendingUpIcon } from './icons';
 import { BRAND } from '@/src/config/brand';
 
 interface ChatEmptyStateProps {
@@ -12,17 +13,17 @@ export default function ChatEmptyState({ onSelectSuggestion }: ChatEmptyStatePro
         <div className="flex items-center justify-center h-full px-4">
             <div className="max-w-2xl w-full text-center space-y-8">
                 {/* Icon */}
-                <div className="inline-flex items-center justify-center w-20 h-20 bg-neutral-800 dark:bg-neutral-200 rounded-xl shadow-lg">
-                    <span className="text-4xl">💹</span>
+                <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl" style={{ backgroundColor: 'var(--color-fill-primary)' }}>
+                    <ArrowTrendingUpIcon className="w-8 h-8" style={{ color: 'var(--color-text-on-fill)' }} />
                 </div>
 
                 {/* Welcome Text */}
                 <div className="space-y-3">
-                    <h1 className="text-3xl font-bold theme-text">
+                    <h1 className="text-xl font-semibold theme-text">
                         Welcome to {BRAND.name}
                     </h1>
-                    <p className="text-lg theme-text-secondary max-w-xl mx-auto">
-                        I can help you analyze markets, execute trades, and manage your portfolio with natural language commands.
+                    <p className="text-sm theme-text-muted max-w-xl mx-auto">
+                        Analyze markets, execute trades, and manage your portfolio with natural language.
                     </p>
                 </div>
 
