@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     )
     
     # Database
-    database_url: str = os.getenv("DATABASE_URL") or os.getenv("TEST_DATABASE_URL", "sqlite:///./enterprise.db")
+    database_url: str = os.getenv("DATABASE_URL") or os.getenv("TEST_DATABASE_URL", "postgresql://edai:edai@localhost:5432/executiondesk")
     test_database_url: Optional[str] = os.getenv("TEST_DATABASE_URL")
     db_pool_min: int = int(os.getenv("DB_POOL_MIN", "2"))
     db_pool_max: int = int(os.getenv("DB_POOL_MAX", "10"))

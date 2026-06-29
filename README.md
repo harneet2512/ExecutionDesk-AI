@@ -127,7 +127,7 @@ FastAPI (Python)          Next.js 15 (React 18, TypeScript, Tailwind)
 │   ├── client_health.py
 │   ├── webhook_dispatcher.py
 │   └── api_key_auth.py
-├── db/ (SQLite/PostgreSQL, 36 migrations)
+├── db/ (PostgreSQL 16, 36 migrations)
 └── evals/ (16 evaluation modules)
 ```
 
@@ -143,18 +143,19 @@ Prediction markets use specialized nodes: `prediction_research > prediction_sign
 ## Quick Start
 
 ```bash
-# Option 1: Docker (recommended)
+# Option 1: Docker (recommended — includes PostgreSQL)
 docker compose up --build
-# Frontend: http://localhost:3000  |  Backend: http://localhost:8000
+# Frontend: http://localhost:3000  |  Backend: http://localhost:8000  |  PostgreSQL: localhost:5432
 
-# Option 2: Manual
+# Option 2: Manual (requires PostgreSQL running locally)
+createdb executiondesk  # or use docker: docker run -d -p 5432:5432 -e POSTGRES_USER=edai -e POSTGRES_PASSWORD=edai -e POSTGRES_DB=executiondesk postgres:16-alpine
 pip install -r requirements.txt
 uvicorn backend.api.main:app --reload --port 8000
 
 cd frontend && npm install && npm run dev
 ```
 
-Database migrations auto-apply on startup. Copy `.env.example` to `.env` for configuration.
+Database migrations auto-apply on startup. Copy `.env.example` to `.env` for configuration. PostgreSQL 16 is the default database backend.
 
 ## Testing
 
@@ -189,7 +190,7 @@ Copy `.env.example` and set:
 ```bash
 # Required
 OPENAI_API_KEY=...
-DATABASE_URL=sqlite:///./enterprise.db
+DATABASE_URL=postgresql://edai:edai@localhost:5432/executiondesk
 
 # Polymarket (for CLOB trading)
 POLYMARKET_API_KEY=...

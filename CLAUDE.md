@@ -38,7 +38,7 @@ python -m compileall backend
 
 ## Architecture
 
-**Stack:** FastAPI (Python) backend + Next.js 15 (React 18, TypeScript, Tailwind) frontend + SQLite
+**Stack:** FastAPI (Python) backend + Next.js 15 (React 18, TypeScript, Tailwind) frontend + PostgreSQL 16
 
 **Backend layout (`backend/`):**
 - `api/main.py` - FastAPI app entry point; migrations auto-run on startup
@@ -48,7 +48,7 @@ python -m compileall backend
 - `orchestrator/runner.py` - DAG-based run execution engine (create_run, execute_run)
 - `orchestrator/nodes/` - DAG nodes: research > signals > news > risk > strategy > proposal > policy_check > approval > execution > post_trade > eval
 - `orchestrator/state_machine.py` - Run status (CREATED > RUNNING > COMPLETED/FAILED) and confirmation status enums
-- `db/connect.py` - SQLite/PostgreSQL connection management (`get_conn` context manager, `row_get` helper, `init_db`)
+- `db/connect.py` - PostgreSQL connection management with psycopg2 ThreadedConnectionPool (`get_conn` context manager, `row_get` helper, `init_db`)
 - `db/migrations/` - 36 sequential SQL migrations (auto-applied on startup)
 - `db/repo/` - Repository pattern data access layer
 - `services/` - Market data, policy engine, news ingestion, notifications, pre-confirmation insights
@@ -101,7 +101,7 @@ python -m compileall backend
 ## Testing
 
 - Config: `pytest.ini` sets `testpaths = tests` and `TEST_AUTH_BYPASS=true`
-- Tests use isolated SQLite databases via `test_db` fixture in `tests/conftest.py`
+- Tests use isolated PostgreSQL databases via `test_db` fixture in `tests/conftest.py`
 - Auth in tests: use `X-Dev-Tenant` header with FastAPI TestClient
 - When mocking lazily-imported functions, patch at source module (e.g., `backend.db.connect.get_schema_status`)
 - CI runs: pytest with coverage, ruff lint, secret redaction security checks

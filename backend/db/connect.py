@@ -1,9 +1,12 @@
 """Database connection management.
 
-Supports both SQLite (default) and PostgreSQL backends.
+PostgreSQL is the default and recommended backend, using psycopg2's
+ThreadedConnectionPool for connection reuse. SQLite is supported as a
+fallback for tests and lightweight local development.
+
 The active backend is determined by the DATABASE_URL setting:
-  - sqlite:///path  -> SQLite (file-based, no pool)
   - postgresql://... -> PostgreSQL (ThreadedConnectionPool from psycopg2)
+  - sqlite:///path   -> SQLite (file-based, no pool, fallback only)
 """
 import sqlite3
 import os
