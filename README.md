@@ -37,7 +37,7 @@ Built on top of the Polymarket CLOB and Gamma APIs — the same stack a Polymark
 
 ExecutionDesk exposes the entire platform as an MCP (Model Context Protocol) server. Connect it to Claude Code, Codex, or any MCP-compatible client and interact with Polymarket, run trades, check positions, and monitor client health — without opening the web UI.
 
-**12 tools available:** `search_markets`, `get_market_detail`, `get_order_book`, `get_price_history`, `get_recent_trades`, `list_runs`, `get_run_detail`, `execute_trade`, `get_positions`, `system_health`, `get_eval_results`, `list_clients`
+**13 tools available:** `search_markets`, `get_market_detail`, `get_order_book`, `get_price_history`, `get_recent_trades`, `list_runs`, `get_run_detail`, `execute_trade`, `confirm_trade`, `get_positions`, `system_health`, `get_eval_results`, `list_clients`
 
 ### Setup (Claude Code)
 

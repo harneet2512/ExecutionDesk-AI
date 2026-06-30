@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "executiondesk": {
+      "command": "bash",
+      "args": ["-c", "pip install -q httpx mcp pydantic pydantic-settings python-dotenv psycopg2-binary 2>/dev/null; python mcp_server.py"]
+    }
+  }
+}

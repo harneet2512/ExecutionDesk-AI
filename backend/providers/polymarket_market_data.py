@@ -31,6 +31,7 @@ class PolymarketMarketDataProvider:
     def __init__(self):
         self.base_url = "https://clob.polymarket.com"
         self.gamma_url = "https://gamma-api.polymarket.com"
+        self.data_url = "https://data-api.polymarket.com"
 
     def search_markets(
         self, query: str, limit: int = 10
@@ -394,9 +395,9 @@ class PolymarketMarketDataProvider:
         Returns:
             List of trade dicts. Returns empty list on error.
         """
-        url = f"{self.gamma_url}/trades"
+        url = f"{self.data_url}/trades"
         params = {
-            "conditionId": condition_id,
+            "market": condition_id,
             "limit": limit,
         }
 
@@ -425,6 +426,13 @@ class PolymarketMarketDataProvider:
                 except (ValueError, TypeError):
                     size = 0.0
 
+                ts_raw = t.get("timestamp") or t.get("createdAt")
+                if isinstance(ts_raw, (int, float)):
+                    from datetime import datetime, timezone
+                    ts = datetime.fromtimestamp(ts_raw, tz=timezone.utc).isoformat()
+                else:
+                    ts = ts_raw
+
                 trades.append({
                     "trade_id": t.get("id", ""),
                     "condition_id": t.get("conditionId", condition_id),
@@ -432,7 +440,7 @@ class PolymarketMarketDataProvider:
                     "size": size,
                     "side": t.get("side", ""),
                     "outcome": t.get("outcome", ""),
-                    "timestamp": t.get("timestamp") or t.get("createdAt"),
+                    "timestamp": ts,
                 })
 
             logger.info(
@@ -448,7 +456,7 @@ class PolymarketMarketDataProvider:
             return []
         except httpx.HTTPStatusError as e:
             logger.error(
-                "Gamma API error fetching trades for condition_id=%s: %d - %s",
+                "Data API error fetching trades for condition_id=%s: %d - %s",
                 condition_id, e.response.status_code, e.response.text[:200],
             )
             return []
