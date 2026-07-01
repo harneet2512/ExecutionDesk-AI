@@ -1,7 +1,7 @@
 # ExecutionDesk AI
 
 <p align="center">
-  <img src="./docs/media/mcp-live-demo.gif" alt="Claude Code + Polymarket MCP — live trade demo" width="100%" />
+  <img src="./docs/media/executiondesk-demo.gif" alt="ExecutionDesk AI — platform walkthrough" width="100%" />
 </p>
 
 <p align="center">
@@ -13,23 +13,19 @@
 
 ## What This Is
 
-ExecutionDesk is an internal operations platform for a prediction market exchange. It handles what a Forward Deployed Product Engineer builds day-to-day: partner onboarding, trade execution infrastructure, client health monitoring, operational runbooks, and developer-facing APIs.
+ExecutionDesk is an internal operations platform for a prediction market exchange — partner onboarding, trade execution infrastructure, client health monitoring, operational runbooks, and developer-facing APIs.
 
-Built on top of the Polymarket CLOB and Gamma APIs — the same stack a Polymarket FDPE would work with daily.
+Built on top of the Polymarket CLOB and Gamma APIs.
 
 ### Platform Overview
 
-| Home Dashboard | Markets Browser | Chat Execution |
+| Prediction Markets | Trade Execution | Trading Runs |
 |:-:|:-:|:-:|
-| ![Home](frontend/screenshot-vercel-home.png) | ![Markets](frontend/screenshot-vercel-markets.png) | ![Chat](frontend/screenshot-vercel-chat.png) |
+| ![Markets](frontend/screenshot-test-markets-page.png) | ![Chat](frontend/screenshot-test-chat-btc.png) | ![Runs](frontend/screenshot-test-runs.png) |
 
-| Client Operations | API Documentation | Evaluations |
+| Evaluations | API Documentation | Portfolio |
 |:-:|:-:|:-:|
-| ![Clients](frontend/screenshot-vercel-clients.png) | ![Docs](frontend/screenshot-vercel-docs.png) | ![Evals](frontend/screenshot-vercel-evals.png) |
-
-| Runs (DAG Execution) | Performance Telemetry | Operations |
-|:-:|:-:|:-:|
-| ![Runs](frontend/screenshot-vercel-runs.png) | ![Performance](frontend/screenshot-vercel-perf.png) | ![Ops](frontend/screenshot-vercel-ops.png) |
+| ![Evals](frontend/screenshot-test-evals.png) | ![Docs](frontend/screenshot-vercel-docs.png) | ![Portfolio](frontend/screenshot-test-chat-markets.png) |
 
 ---
 
@@ -38,6 +34,14 @@ Built on top of the Polymarket CLOB and Gamma APIs — the same stack a Polymark
 ExecutionDesk exposes the entire platform as an MCP (Model Context Protocol) server. Connect it to Claude Code, Codex, or any MCP-compatible client and interact with Polymarket, run trades, check positions, and monitor client health — without opening the web UI.
 
 **13 tools available:** `search_markets`, `get_market_detail`, `get_order_book`, `get_price_history`, `get_recent_trades`, `list_runs`, `get_run_detail`, `execute_trade`, `confirm_trade`, `get_positions`, `system_health`, `get_eval_results`, `list_clients`
+
+### Live Demo
+
+Claude Code autonomously discovers World Cup prediction markets on Polymarket, analyzes the highest-volume market's order book and price history, places a paper trade for 10 YES shares, and confirms the fill — 6 MCP tool calls end-to-end:
+
+<p align="center">
+  <img src="./docs/media/mcp-live-demo.gif" alt="MCP live demo — search, analyze, trade on Polymarket via Claude Code" width="100%" />
+</p>
 
 ### Setup (Claude Code)
 
@@ -64,11 +68,22 @@ Then in Claude Code:
 > Buy 10 YES shares and confirm the trade
 ```
 
-**Live demo** — Claude Code autonomously calls 6 MCP tools against real Polymarket data, analyzes the order book, and executes a paper trade:
+### MCP Tool Reference
 
-<p align="center">
-  <img src="./docs/media/mcp-live-demo.gif" alt="MCP live demo — search, analyze, trade" width="100%" />
-</p>
+| Tool | Description |
+|------|-------------|
+| `search_markets` | Search Polymarket events by keyword, ranked by volume |
+| `get_market_detail` | Market metadata — question, outcomes, volume, liquidity, condition ID |
+| `get_order_book` | Live bid/ask depth, spread, total liquidity |
+| `get_price_history` | Historical probability data for charting and trend analysis |
+| `get_recent_trades` | Latest fills on a market |
+| `execute_trade` | Place a BUY/SELL order (PAPER or LIVE mode) |
+| `confirm_trade` | Confirm a staged order and get fill details |
+| `get_positions` | Current portfolio positions and P&L |
+| `list_runs` / `get_run_detail` | DAG execution history and node-level traces |
+| `system_health` | Backend health check (DB, providers, queues) |
+| `get_eval_results` | Evaluation scores and grading |
+| `list_clients` | Partner client list with health summaries |
 
 ---
 
@@ -113,7 +128,7 @@ resp = httpx.post("https://clob.polymarket.com/order", json={
 
 ## Client Operations
 
-The FDPE manages partner relationships. This platform tracks client health, surfaces degradation, and provides operational playbooks.
+This platform tracks partner health, surfaces degradation, and provides operational playbooks.
 
 - **Health scoring** (0-100) with classification: healthy / good / at_risk / churning / inactive
 - **Scoring model**: activity 30% + success rate 25% + volume trend 20% + error frequency 15% + feature adoption 10%
@@ -121,15 +136,11 @@ The FDPE manages partner relationships. This platform tracks client health, surf
 - **Issue tracking** with threaded comments, priority, and linked run IDs
 - **Runbooks**: 8 pre-populated operational guides (insufficient balance, order timeout, rate limiting, etc.)
 
-| ![Clients](frontend/screenshot-vercel-clients.png) | ![Positions](frontend/screenshot-vercel-positions.png) |
-|:-:|:-:|
-| Client dashboard with health gauges | Position tracking |
-
 ---
 
 ## Developer Platform
 
-Partner-facing APIs with auth, webhooks, and interactive docs — the kind of tooling an FDPE ships to help partners self-serve.
+Partner-facing APIs with auth, webhooks, and interactive docs — tooling that helps partners self-serve.
 
 - **API keys**: SHA256 hash storage, permission scoping (read/trade/admin), rotation with 24h grace period
 - **Webhooks**: HMAC-signed payloads, async delivery with retry, dead letter queue after 3 failures
@@ -167,6 +178,7 @@ FastAPI (Python)          Next.js 15 (React 18, TypeScript, Tailwind)
 │   ├── webhook_dispatcher.py
 │   └── api_key_auth.py
 ├── db/ (PostgreSQL 16, 36 migrations)
+├── mcp_server.py (MCP stdio server — 13 tools)
 └── evals/ (16 evaluation modules)
 ```
 
@@ -219,6 +231,7 @@ pytest tests/test_polymarket_provider.py -v
 | DAG nodes | 16 |
 | Database migrations | 36 |
 | Evaluation modules | 16 |
+| MCP tools | 13 |
 | Automated tests | 185+ |
 | Providers | 5 (Polymarket CLOB, Polymarket Market Data, Coinbase CDP, Polygon, Paper) |
 
