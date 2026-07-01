@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "executiondesk": {
+      "command": "python",
+      "args": ["D:\\ExecutionDesk-AI\\demos\\demo_mcp.py"]
+    }
+  }
+}

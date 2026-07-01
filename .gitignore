@@ -59,3 +59,10 @@ TODO_POLYMARKET_FDPE.md
 # Lockfiles (optional - some prefer to commit; uncomment to ignore)
 # package-lock.json
 # frontend/package-lock.json
+.vercel
+
+# Demo recording artifacts
+demos/*.mkv
+demos/*.png
+demos/__pycache__/
+nul

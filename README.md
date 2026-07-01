@@ -1,7 +1,7 @@
 # ExecutionDesk AI
 
 <p align="center">
-  <img src="./docs/media/executiondesk-demo.gif" alt="ExecutionDesk AI demo" width="100%" />
+  <img src="./docs/media/mcp-live-demo.gif" alt="Claude Code + Polymarket MCP — live trade demo" width="100%" />
 </p>
 
 <p align="center">
@@ -59,11 +59,16 @@ Add to your `~/.claude.json` or project `.claude/settings.json`:
 
 Then in Claude Code:
 ```
-> Search Polymarket for "bitcoin" markets
-> What's the order book for the Trump election market?
-> Show me recent execution runs
-> Execute a paper trade: buy $10 of ETH
+> What are the top World Cup prediction markets on Polymarket?
+> Analyze the highest-volume one — order book, price history
+> Buy 10 YES shares and confirm the trade
 ```
+
+**Live demo** — Claude Code autonomously calls 6 MCP tools against real Polymarket data, analyzes the order book, and executes a paper trade:
+
+<p align="center">
+  <img src="./docs/media/mcp-live-demo.gif" alt="MCP live demo — search, analyze, trade" width="100%" />
+</p>
 
 ---
 

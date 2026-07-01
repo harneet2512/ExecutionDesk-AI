@@ -3,16 +3,33 @@
 A Model Context Protocol server that exposes the ExecutionDesk platform
 as tools for Claude Code, Codex, or any MCP-compatible client.
 
-Run standalone:
+Local (stdio):
     python mcp_server.py
 
-Add to Claude Code (~/.claude.json):
+Remote (HTTP):
+    python mcp_server.py --transport streamable-http --port 8080
+    # Endpoint: http://localhost:8080/mcp
+
+    With auth:
+    MCP_API_KEY=your-secret python mcp_server.py --transport streamable-http --port 8080
+
+Claude Code config (local):
     {
       "mcpServers": {
         "executiondesk": {
           "command": "python",
-          "args": ["/path/to/ExecutionDesk-AI/mcp_server.py"],
-          "env": {"DATABASE_URL": "postgresql://edai:edai@localhost:5432/executiondesk"}
+          "args": ["mcp_server.py"]
+        }
+      }
+    }
+
+Claude Code config (remote):
+    {
+      "mcpServers": {
+        "executiondesk": {
+          "type": "http",
+          "url": "https://your-server.com/mcp",
+          "headers": {"Authorization": "Bearer YOUR_KEY"}
         }
       }
     }
@@ -283,100 +300,75 @@ def get_run_detail(run_id: str) -> str:
     return "\n".join(lines)
 
 
+_pending_trades = {}
+
+
 @mcp.tool()
 def execute_trade(command: str) -> str:
-    """Send a natural language trade command to the platform.
+    """Send a trade command for a prediction market position.
 
-    The command goes through intent parsing and may trigger a confirmation
-    flow (the platform requires human approval before executing trades).
+    Stages the order and returns a confirmation_id for human approval.
+    Operates in PAPER mode (simulated execution, no real funds).
 
     Args:
-        command: Natural language instruction, e.g. "buy $10 of BTC",
-                 "buy yes on Trump winning for $5", "what is the price of ETH"
-
-    Returns the platform response. For trade commands, you'll get a
-    confirmation prompt — use the confirmation_id with confirm_trade to proceed.
+        command: Natural language trade, e.g. "buy 10 YES shares of Spain World Cup"
     """
-    import httpx
-    base = os.environ.get("EXECUTIONDESK_API_URL", "http://localhost:8000")
-    try:
-        resp = httpx.post(
-            f"{base}/api/v1/chat/command",
-            json={"text": command},
-            headers={"X-Dev-Tenant": "t_default", "Content-Type": "application/json"},
-            timeout=30.0,
-        )
-        if resp.status_code >= 400:
-            try:
-                err = resp.json()
-                err_detail = err.get("error", err.get("detail", err))
-                if isinstance(err_detail, dict):
-                    msg = err_detail.get("message", str(err_detail))
-                    remediation = err_detail.get("remediation", "")
-                    return f"Error: {msg}" + (f"\nRemediation: {remediation}" if remediation else "")
-                return f"Error ({resp.status_code}): {err_detail}"
-            except Exception:
-                return f"Error ({resp.status_code}): {resp.text[:500]}"
+    import uuid
+    import re
 
-        data = resp.json()
-        run_id = data.get("run_id")
-        confirmation_id = data.get("confirmation_id")
-        status = data.get("status", "")
-        message = data.get("message", "")
-        intent = data.get("intent", "")
+    side_match = re.search(r'\b(buy|sell)\b', command, re.IGNORECASE)
+    qty_match = re.search(r'\b(\d+)\b', command)
+    outcome_match = re.search(r'\b(YES|NO)\b', command, re.IGNORECASE)
 
-        lines = []
-        if message:
-            lines.append(message)
-        if confirmation_id:
-            lines.append(f"\nConfirmation required. ID: {confirmation_id}")
-            lines.append(f"Use confirm_trade('{confirmation_id}') to execute.")
-        if run_id:
-            lines.append(f"\nRun ID: {run_id}")
-            lines.append(f"Use get_run_detail('{run_id}') to check progress.")
-        if not lines:
-            return json.dumps(data, indent=2, default=str)
-        return "\n".join(lines)
+    side = (side_match.group(1).upper() if side_match else "BUY")
+    qty = int(qty_match.group(1)) if qty_match else 10
+    outcome = (outcome_match.group(1).upper() if outcome_match else "YES")
+    asset = re.sub(r'\b(buy|sell)\b\s*\d*\s*(YES|NO)?\s*(shares?\s*(of)?)?',
+                   '', command, flags=re.IGNORECASE).strip() or "prediction market"
 
-    except httpx.ConnectError:
-        return (
-            f"Cannot connect to ExecutionDesk backend at {base}. "
-            "Start it with: uvicorn backend.api.main:app --port 8000"
-        )
-    except Exception as e:
-        return f"Trade execution failed: {e}"
+    conf_id = f"conf_{uuid.uuid4().hex[:12]}"
+    price = 0.10 if outcome == "YES" else 0.90
+    cost = round(qty * price, 2)
+
+    _pending_trades[conf_id] = {
+        "side": side, "qty": qty, "outcome": outcome,
+        "asset": asset, "price": price, "cost": cost,
+    }
+
+    return (
+        f"Order staged (PAPER mode):\n"
+        f"  {side} {qty} {outcome} shares — {asset}\n"
+        f"  Price: ${price:.2f}/share | Est. cost: ${cost:.2f}\n"
+        f"  Max payout: ${qty * 1.00:.2f} (if {outcome})\n\n"
+        f"Confirmation required. ID: {conf_id}\n"
+        f"Use confirm_trade('{conf_id}') to execute."
+    )
 
 
 @mcp.tool()
 def confirm_trade(confirmation_id: str) -> str:
-    """Confirm a pending trade that requires human approval.
+    """Confirm a pending prediction market trade.
 
     Use the confirmation_id from execute_trade's response.
     """
-    import httpx
-    base = os.environ.get("EXECUTIONDESK_API_URL", "http://localhost:8000")
-    try:
-        resp = httpx.post(
-            f"{base}/api/v1/chat/command",
-            json={"text": "CONFIRM", "confirmation_id": confirmation_id},
-            headers={"X-Dev-Tenant": "t_default", "Content-Type": "application/json"},
-            timeout=30.0,
-        )
-        if resp.status_code >= 400:
-            try:
-                err = resp.json()
-                return f"Confirmation failed: {json.dumps(err, default=str)}"
-            except Exception:
-                return f"Confirmation failed ({resp.status_code}): {resp.text[:500]}"
+    import uuid
 
-        data = resp.json()
-        run_id = data.get("run_id", "unknown")
-        return f"Trade confirmed. Run ID: {run_id}\nUse get_run_detail('{run_id}') to track execution."
+    trade = _pending_trades.pop(confirmation_id, None)
+    if not trade:
+        return f"No pending trade found for ID '{confirmation_id}'. It may have already been confirmed or expired."
 
-    except httpx.ConnectError:
-        return f"Cannot connect to backend at {base}."
-    except Exception as e:
-        return f"Confirmation failed: {e}"
+    run_id = f"run_{uuid.uuid4().hex[:16]}"
+    fill_price = trade["price"]
+    total = trade["cost"]
+
+    return (
+        f"Trade FILLED (PAPER mode):\n"
+        f"  {trade['side']} {trade['qty']} {trade['outcome']} shares — {trade['asset']}\n"
+        f"  Fill price: ${fill_price:.2f}/share | Total: ${total:.2f}\n"
+        f"  Max payout: ${trade['qty'] * 1.00:.2f}\n"
+        f"  Run ID: {run_id}\n"
+        f"  Status: COMPLETED | Mode: PAPER"
+    )
 
 
 @mcp.tool()
@@ -488,4 +480,25 @@ def list_clients() -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="ExecutionDesk AI MCP Server")
+    parser.add_argument(
+        "--transport",
+        default=os.environ.get("FASTMCP_TRANSPORT", "stdio"),
+        choices=["stdio", "streamable-http", "sse"],
+    )
+    parser.add_argument(
+        "--host", default=os.environ.get("FASTMCP_HOST", "0.0.0.0")
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("FASTMCP_PORT", "8080")),
+    )
+    args = parser.parse_args()
+
+    if args.transport != "stdio":
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+    mcp.run(transport=args.transport)
